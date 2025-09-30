@@ -1158,6 +1158,7 @@ function M.handle_tab()
     deltas[line] = (deltas[line] or 0) + indent_len
   end
   apply_line_deltas(deltas)
+  multi_cursor.update_highlights()
 end
 
 function M.handle_shift_tab()
@@ -1190,6 +1191,7 @@ function M.handle_shift_tab()
     return
   end
   apply_line_deltas(deltas)
+  multi_cursor.update_highlights()
 end
 
 function M.on_insert_pre()
