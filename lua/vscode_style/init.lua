@@ -12,7 +12,6 @@ local state = {
   config = nil,
   autocmd_group = nil,
   snapshots = {},
-  backspace_mapped = false,
   applied_keymaps = {},
   keymap_restore = {},
 }
@@ -102,7 +101,6 @@ end
 
 local function apply_keymaps()
   clear_keymaps()
-  state.backspace_mapped = false
 
   if state.config.mapping_strategy == 'skip' then
     return
@@ -143,9 +141,6 @@ local function apply_keymaps()
           if ok then
             local del_opts = opts.buffer and { buffer = opts.buffer } or nil
             record_applied_keymap(lhs, del_opts)
-            if spec.handler and spec.handler.fn == 'backspace_expr' and opts.expr then
-              state.backspace_mapped = true
-            end
           else
             notify(vim.log.levels.WARN, string.format('vscode_style: failed to map %s (%s)', lhs, err))
           end
