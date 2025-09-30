@@ -120,16 +120,29 @@ local function set_mappings()
   
   -- Backspace handling
   if config.backspace_deletes_selection then
-    if map_if_enabled('handle_backspace', function()
+    -- Try to map backspace with expression mode
+    local bs_mapped = map_if_enabled('handle_backspace', function()
       return actions.backspace_expr()
-    end, { expr = true }) then
+    end, { expr = true })
+    
+    if bs_mapped then
       state.backspace_mapped = true
+      config_module.log(config, 'Backspace mapped with expr mode', 'debug')
     end
     
-    if map_if_enabled('handle_backspace_ctrl', function()
+    -- Also try Ctrl+h
+    local ch_mapped = map_if_enabled('handle_backspace_ctrl', function()
       return actions.backspace_expr()
-    end, { expr = true }) then
+    end, { expr = true })
+    
+    if ch_mapped then
       state.backspace_mapped = true
+      config_module.log(config, 'Ctrl+h mapped with expr mode', 'debug')
+    end
+    
+    -- If neither mapped, fall back to InsertCharPre autocmd
+    if not state.backspace_mapped then
+      config_module.log(config, 'Using InsertCharPre fallback for backspace', 'debug')
     end
   end
   

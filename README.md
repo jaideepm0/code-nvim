@@ -292,11 +292,64 @@ All keybindings work in **insert mode only**:
 1. Check if enabled: `:lua vim.print(require('vscode_style').get_config().enabled)`
 2. Check buffer-local setting: `:lua vim.print(vim.b.vscode_style_enabled)`
 3. Enable debug mode: `require('vscode_style').setup({ debug = true, log_level = 'debug' })`
+4. Check messages: `:messages`
 
 ### Keybindings not working?
 1. Check if feature is enabled in `features` table
 2. Verify keybinding not disabled in `disable_keymaps`
 3. Check `respect_existing_maps` setting
+4. Verify mapping: `:verbose imap <key>` (e.g., `:verbose imap <S-Left>`)
+
+### Backspace not deleting selection?
+This is a common issue. Here's how to fix it:
+
+1. **Ensure feature is enabled:**
+   ```lua
+   require('vscode_style').setup({
+     backspace_deletes_selection = true,  -- Must be true
+   })
+   ```
+
+2. **Check if backspace is mapped:**
+   ```vim
+   :verbose imap <BS>
+   ```
+   Should show mapping to vscode_style handler
+
+3. **Enable debug to see what's happening:**
+   ```lua
+   require('vscode_style').setup({
+     backspace_deletes_selection = true,
+     debug = true,
+     log_level = 'debug',
+   })
+   ```
+   Then press backspace and check `:messages`
+
+4. **Verify selection exists:**
+   - You should see visual highlight when text is selected
+   - Try: Enter insert mode → Hold Shift → Press arrow keys
+   - Selection should be highlighted
+
+5. **Test with minimal config:**
+   ```lua
+   -- Disable other plugins temporarily
+   require('vscode_style').setup({
+     backspace_deletes_selection = true,
+   })
+   ```
+
+6. **Check for conflicting plugins:**
+   - Some plugins may override backspace behavior
+   - Try disabling other insert-mode plugins temporarily
+
+**Common causes:**
+- Feature disabled in config (`backspace_deletes_selection = false`)
+- Conflicting plugin overriding `<BS>` mapping
+- Selection not properly established (no highlight visible)
+- Not in insert mode when pressing backspace
+
+**Still not working?** See [BACKSPACE_GUIDE.md](./BACKSPACE_GUIDE.md) for detailed debugging steps.
 
 ### Want to disable for specific files?
 ```lua
