@@ -147,6 +147,26 @@ local function sort_cursors()
   end
 end
 
+local function has_multiple_cursors()
+  return state.cursors and #state.cursors > 1
+end
+
+local function cursor_has_selection(cursor)
+  return cursor and cursor.selection ~= nil
+end
+
+local function any_cursor_has_selection()
+  if not state.cursors then
+    return false
+  end
+  for _, cursor in ipairs(state.cursors) do
+    if cursor_has_selection(cursor) then
+      return true
+    end
+  end
+  return false
+end
+
 local function ensure_primary()
   if #state.cursors == 0 then
     local pos = vim.api.nvim_win_get_cursor(0)
@@ -486,7 +506,11 @@ function M.save_snapshot()
   ensure_namespace()
   M.switch_buffer()
   local bufnr = vim.api.nvim_get_current_buf()
-  state.snapshots[bufnr] = M.snapshot()
+  if has_multiple_cursors() or any_cursor_has_selection() then
+    state.snapshots[bufnr] = M.snapshot()
+  else
+    state.snapshots[bufnr] = nil
+  end
 end
 
 function M.restore_snapshot(opts)
