@@ -198,6 +198,7 @@ function M.setup(plugin_state)
   ensure_namespace()
   state.current_buf = nil
   state.generation = (state.generation or 0) + 1
+  state.snapshots = state.snapshots or {}
 end
 
 function M.iter()
@@ -436,6 +437,59 @@ end
 
 function M.current_generation()
   return state and state.generation or 0
+end
+
+local function cursor_to_snapshot(cursor)
+  return {
+    line = cursor.line,
+    col = cursor.col,
+    is_primary = cursor.is_primary,
+  }
+end
+
+function M.snapshot()
+  ensure_namespace()
+  M.switch_buffer()
+  ensure_primary()
+  local snap = {}
+  for _, cursor in ipairs(state.cursors) do
+    table.insert(snap, cursor_to_snapshot(cursor))
+  end
+  return snap
+end
+
+function M.save_snapshot()
+  ensure_namespace()
+  M.switch_buffer()
+  local bufnr = vim.api.nvim_get_current_buf()
+  state.snapshots[bufnr] = M.snapshot()
+end
+
+function M.restore_snapshot(opts)
+  ensure_namespace()
+  M.switch_buffer()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local snap = opts and opts.snapshot or state.snapshots[bufnr]
+  if not snap or #snap == 0 then
+    return
+  end
+  local defs = {}
+  for idx, entry in ipairs(snap) do
+    defs[idx] = {
+      line = entry.line,
+      col = entry.col,
+      is_primary = entry.is_primary,
+    }
+  end
+  M.replace_all_cursors(defs)
+  M.update_highlights()
+end
+
+function M.clear_snapshot(bufnr)
+  if not (state and state.snapshots) then
+    return
+  end
+  state.snapshots[bufnr or vim.api.nvim_get_current_buf()] = nil
 end
 
 function M.add_cursor_relative(cursor, delta_line)
