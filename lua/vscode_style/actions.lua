@@ -975,62 +975,94 @@ function M.handle_backspace()
 end
 
 function M.backspace_expr()
-  -- Ensure we're working with current cursor state
-  multi_cursor.sync_cursors()
-  
-  -- Get current selections
-  local selections = gather_selections()
-  
-  -- Debug logging
-  if state and state.config and state.config.debug then
-    config_module.log(state.config, 
-      string.format('Backspace pressed, selections: %d', #selections), 
-      'debug')
-  end
-  
-  -- If no selections, return normal backspace
-  if #selections == 0 then
+  -- CRITICAL: Force a sync before checking selections
+  -- This ensures we have the absolute latest state
+  if not multi_cursor then
     return vim.api.nvim_replace_termcodes('<BS>', true, false, true)
   end
   
-  -- We have selections to delete
+  multi_cursor.sync_cursors()
+  
+  -- Get current selections - must be done AFTER sync
+  local selections = gather_selections()
+  
+  -- Debug logging with explicit count
   if state and state.config and state.config.debug then
-    config_module.log(state.config, 'Deleting selections via backspace', 'debug')
+    config_module.log(state.config, 
+      string.format('[BACKSPACE] Pressed. Found %d selection(s)', #selections), 
+      'debug')
+    
+    -- Log each selection for debugging
+    for i, sel in ipairs(selections) do
+      config_module.log(state.config,
+        string.format('[BACKSPACE] Selection %d: (%d,%d) to (%d,%d)',
+          i, sel.start.line, sel.start.col, sel.finish.line, sel.finish.col),
+        'debug')
+    end
+  end
+  
+  -- If no selections, return normal backspace behavior
+  if #selections == 0 then
+    if state and state.config and state.config.debug then
+      config_module.log(state.config, '[BACKSPACE] No selections, using normal BS', 'debug')
+    end
+    return vim.api.nvim_replace_termcodes('<BS>', true, false, true)
+  end
+  
+  -- We have selections - delete them
+  if state and state.config and state.config.debug then
+    config_module.log(state.config, '[BACKSPACE] Deleting selections', 'debug')
   end
   
   local target_buf = vim.api.nvim_get_current_buf()
   local generation = multi_cursor.current_generation and multi_cursor.current_generation() or nil
   
-  -- Schedule the deletion to happen after this expression evaluation
+  -- Schedule deletion to happen after expression evaluation
+  -- This is CRITICAL - we can't delete during expression evaluation
   vim.schedule(function()
-    -- Safety checks
+    -- Validate buffer still exists
     if not vim.api.nvim_buf_is_valid(target_buf) then
-      return
-    end
-    
-    if generation and multi_cursor.current_generation and multi_cursor.current_generation() ~= generation then
-      return
-    end
-    
-    -- Perform the deletion
-    vim.api.nvim_buf_call(target_buf, function()
-      -- Re-sync to ensure we have latest state
-      multi_cursor.sync_cursors()
-      
-      -- Delete the selections
-      if #selections > 0 then
-        delete_selections(selections)
-        multi_cursor.sync_cursors()
-        collapse_deleted_selections(selections)
-        multi_cursor.update_highlights()
-        
-        if state and state.config and state.config.debug then
-          config_module.log(state.config, 
-            string.format('Deleted %d selections', #selections), 
-            'debug')
-        end
+      if state and state.config and state.config.debug then
+        config_module.log(state.config, '[BACKSPACE] Buffer invalid, aborting', 'warn')
       end
+      return
+    end
+    
+    -- Check generation hasn't changed
+    if generation and multi_cursor.current_generation and multi_cursor.current_generation() ~= generation then
+      if state and state.config and state.config.debug then
+        config_module.log(state.config, '[BACKSPACE] Generation changed, aborting', 'warn')
+      end
+      return
+    end
+    
+    -- Perform the actual deletion
+    local ok, err = pcall(function()
+      vim.api.nvim_buf_call(target_buf, function()
+        -- Re-sync to ensure latest state
+        multi_cursor.sync_cursors()
+        
+        -- Delete all selections
+        if #selections > 0 then
+          delete_selections(selections)
+          multi_cursor.sync_cursors()
+          collapse_deleted_selections(selections)
+          multi_cursor.update_highlights()
+          
+          if state and state.config and state.config.debug then
+            config_module.log(state.config, 
+              string.format('[BACKSPACE] Successfully deleted %d selection(s)', #selections), 
+              'debug')
+          end
+        end
+      end)
     end)
+    
+    if not ok and state and state.config and state.config.debug then
+      config_module.log(state.config, 
+        string.format('[BACKSPACE] Error during deletion: %s', tostring(err)),
+        'error')
+    end
   end)
   
   -- Return empty string to prevent default backspace
@@ -1107,12 +1139,24 @@ function M.on_insert_pre()
   local char = vim.v.char
   local key = vim.v.key
   
-  -- Handle backspace if not mapped
+  -- Handle backspace if not mapped (fallback path)
   if not state.backspace_mapped then
     local keyname = vim.fn.keytrans(key or '')
     if keyname == '<BS>' or keyname == '<C-H>' then
+      -- Sync cursors to get latest state
+      if not multi_cursor then
+        return
+      end
+      
       multi_cursor.sync_cursors()
       local selections = gather_selections()
+      
+      -- Debug log
+      if state and state.config and state.config.debug then
+        config_module.log(state.config,
+          string.format('[INSERTCHARPRE] Backspace via autocmd, %d selections', #selections),
+          'debug')
+      end
       
       -- If no selections, let default backspace work
       if #selections == 0 then
@@ -1134,19 +1178,35 @@ function M.on_insert_pre()
           return
         end
         
-        vim.api.nvim_buf_call(target_buf, function()
-          if vim.api.nvim_get_mode().mode:sub(1, 1) ~= 'i' then
-            return
-          end
-          
-          -- Delete selections
-          if #selections > 0 then
-            delete_selections(selections)
-            multi_cursor.sync_cursors()
-            collapse_deleted_selections(selections)
-            multi_cursor.update_highlights()
-          end
+        local ok, err = pcall(function()
+          vim.api.nvim_buf_call(target_buf, function()
+            -- Must be in insert mode
+            local mode = vim.api.nvim_get_mode().mode
+            if mode:sub(1, 1) ~= 'i' then
+              return
+            end
+            
+            -- Delete selections
+            if #selections > 0 then
+              delete_selections(selections)
+              multi_cursor.sync_cursors()
+              collapse_deleted_selections(selections)
+              multi_cursor.update_highlights()
+              
+              if state and state.config and state.config.debug then
+                config_module.log(state.config,
+                  string.format('[INSERTCHARPRE] Deleted %d selections', #selections),
+                  'debug')
+              end
+            end
+          end)
         end)
+        
+        if not ok and state and state.config and state.config.debug then
+          config_module.log(state.config,
+            string.format('[INSERTCHARPRE] Error: %s', tostring(err)),
+            'error')
+        end
       end)
       return
     end
@@ -1159,6 +1219,11 @@ function M.on_insert_pre()
   
   -- Handle typing replacement of selections
   if not char or char == '' then
+    return
+  end
+  
+  -- Check if we have any selections to replace
+  if not multi_cursor then
     return
   end
   
@@ -1197,64 +1262,72 @@ function M.on_insert_pre()
       return
     end
     
-    vim.api.nvim_buf_call(target_buf, function()
-      -- Ensure we're still in insert mode
-      if vim.api.nvim_get_mode().mode:sub(1, 1) ~= 'i' then
-        return
-      end
-      
-      if #snapshot == 0 then
-        return
-      end
-      
-      -- Delete all selections first
-      delete_selections(snapshot)
-      multi_cursor.sync_cursors()
-      collapse_deleted_selections(snapshot)
-      multi_cursor.update_highlights()
-      
-      -- Convert character to text lines (handles newlines)
-      local text_lines = char_to_text_lines(insert_char)
-      
-      -- Gather all cursor positions
-      local points = {}
-      for _, cursor in ipairs(multi_cursor.iter()) do
-        table.insert(points, { cursor = cursor, line = cursor.line, col = cursor.col })
-      end
-      
-      if #points == 0 then
-        return
-      end
-      
-      -- Sort in descending order for proper insertion
-      sort_points_desc(points)
-      
-      -- Insert text at each cursor
-      for _, point in ipairs(points) do
-        utils.safe_buf_op(function()
-          vim.api.nvim_buf_set_text(target_buf, point.line, point.col, point.line, point.col, text_lines)
-        end, 'Failed to insert text')
-      end
-      
-      -- Update cursor positions after insertion
-      local line_delta = #text_lines - 1
-      local tail_len = #text_lines[#text_lines]
-      local head_len = #text_lines[1]
-      
-      for _, point in ipairs(points) do
-        local cursor = point.cursor
-        local new_line = point.line + line_delta
-        local new_col
-        if line_delta == 0 then
-          new_col = point.col + head_len
-        else
-          new_col = tail_len
+    local ok, err = pcall(function()
+      vim.api.nvim_buf_call(target_buf, function()
+        -- Ensure we're still in insert mode
+        if vim.api.nvim_get_mode().mode:sub(1, 1) ~= 'i' then
+          return
         end
-        multi_cursor.update_position(cursor, new_line, new_col)
-      end
-      
-      multi_cursor.update_highlights()
+        
+        if #snapshot == 0 then
+          return
+        end
+        
+        -- Delete all selections first
+        delete_selections(snapshot)
+        multi_cursor.sync_cursors()
+        collapse_deleted_selections(snapshot)
+        multi_cursor.update_highlights()
+        
+        -- Convert character to text lines (handles newlines)
+        local text_lines = char_to_text_lines(insert_char)
+        
+        -- Gather all cursor positions
+        local points = {}
+        for _, cursor in ipairs(multi_cursor.iter()) do
+          table.insert(points, { cursor = cursor, line = cursor.line, col = cursor.col })
+        end
+        
+        if #points == 0 then
+          return
+        end
+        
+        -- Sort in descending order for proper insertion
+        sort_points_desc(points)
+        
+        -- Insert text at each cursor
+        for _, point in ipairs(points) do
+          utils.safe_buf_op(function()
+            vim.api.nvim_buf_set_text(target_buf, point.line, point.col, point.line, point.col, text_lines)
+          end, 'Failed to insert text')
+        end
+        
+        -- Update cursor positions after insertion
+        local line_delta = #text_lines - 1
+        local tail_len = #text_lines[#text_lines]
+        local head_len = #text_lines[1]
+        
+        for _, point in ipairs(points) do
+          local cursor = point.cursor
+          local new_line = point.line + line_delta
+          local new_col
+          if line_delta == 0 then
+            new_col = point.col + head_len
+          else
+            new_col = tail_len
+          end
+          multi_cursor.update_position(cursor, new_line, new_col)
+        end
+        
+        multi_cursor.update_highlights()
+      end)
     end)
+    
+    if not ok and state and state.config and state.config.debug then
+      config_module.log(state.config,
+        string.format('[INSERTCHARPRE] Type error: %s', tostring(err)),
+        'error')
+    end
   end)
 end
 
