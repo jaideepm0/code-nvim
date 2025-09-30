@@ -6,6 +6,7 @@
 - Extend selections with `Shift` + arrow keys, or jump straight to line/file boundaries with `Shift+Home/End` and `Ctrl+Shift+Home/End`.
 - Reshape selections word-by-word using `Ctrl+Shift+Left/Right` and clear them instantly when you leave insert mode.
 - Use `Alt+Up/Down` to move the active lines and `Shift+Alt+Up/Down` to duplicate them in place.
+- Remove whole lines instantly with `Ctrl+Shift+K`, matching VS Code’s delete-line shortcut.
 - Press `Tab`/`Shift+Tab` to indent or dedent just the highlighted span, and overwrite any selection simply by typing.
 - Press `Backspace` to delete whatever you have highlighted without needing to leave insert mode.
 
