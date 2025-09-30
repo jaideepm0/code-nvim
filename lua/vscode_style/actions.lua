@@ -1014,8 +1014,12 @@ function M.on_insert_char_pre(char, key)
   vim.v.char = ''
   local insert_char = char
   local target_buf = vim.api.nvim_get_current_buf()
+  local generation = multi_cursor.current_generation and multi_cursor.current_generation() or nil
   vim.schedule(function()
     if not vim.api.nvim_buf_is_valid(target_buf) then
+      return
+    end
+    if generation and multi_cursor.current_generation and multi_cursor.current_generation() ~= generation then
       return
     end
     vim.api.nvim_buf_call(target_buf, function()
