@@ -154,6 +154,12 @@ function M.setup(user_config)
       multi_cursor.update_highlights()
     end,
   })
+  vim.api.nvim_create_autocmd('BufEnter', {
+    group = state.autocmd_group,
+    callback = function()
+      multi_cursor.switch_buffer()
+    end,
+  })
   set_mappings()
 
   if vim.api.nvim_buf_is_valid(buf) then
