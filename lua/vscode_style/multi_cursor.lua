@@ -492,52 +492,19 @@ local function cursor_to_snapshot(cursor)
 end
 
 function M.snapshot()
-  ensure_namespace()
-  M.switch_buffer()
-  ensure_primary()
-  local snap = {}
-  for _, cursor in ipairs(state.cursors) do
-    table.insert(snap, cursor_to_snapshot(cursor))
-  end
-  return snap
+  return {}
 end
 
 function M.save_snapshot()
-  ensure_namespace()
-  M.switch_buffer()
-  local bufnr = vim.api.nvim_get_current_buf()
-  if has_multiple_cursors() or any_cursor_has_selection() then
-    state.snapshots[bufnr] = M.snapshot()
-  else
-    state.snapshots[bufnr] = nil
-  end
+  -- Snapshotting disabled; leave no state behind.
 end
 
-function M.restore_snapshot(opts)
-  ensure_namespace()
-  M.switch_buffer()
-  local bufnr = vim.api.nvim_get_current_buf()
-  local snap = opts and opts.snapshot or state.snapshots[bufnr]
-  if not snap or #snap == 0 then
-    return
-  end
-  local defs = {}
-  for idx, entry in ipairs(snap) do
-    defs[idx] = {
-      line = entry.line,
-      col = entry.col,
-      is_primary = entry.is_primary,
-    }
-  end
-  M.replace_all_cursors(defs)
-  M.update_highlights()
+function M.restore_snapshot()
+  -- No-op until multi-cursor support returns.
 end
 
-function M.clear_snapshot(bufnr)
-  if not (state and state.snapshots) then
-    return
-  end
-  state.snapshots[bufnr or vim.api.nvim_get_current_buf()] = nil
+function M.clear_snapshot()
+  -- Nothing to clear when snapshotting is disabled.
 end
 
 function M.add_cursor_relative(cursor, delta_line)
