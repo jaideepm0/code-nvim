@@ -67,6 +67,12 @@ local function set_mappings()
   map('<S-Tab>', function()
     actions.handle_shift_tab()
   end)
+  map('<BS>', function()
+    return actions.backspace_expr()
+  end, { expr = true })
+  map('<C-h>', function()
+    return actions.backspace_expr()
+  end, { expr = true })
 
   -- Line and block manipulation
   map('<M-Up>', function()

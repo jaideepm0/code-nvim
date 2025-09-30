@@ -934,10 +934,24 @@ function M.handle_backspace()
   end
 end
 
-local function handle_backspace_pre()
-  if process_backspace() then
-    vim.v.char = ''
+function M.backspace_expr()
+  multi_cursor.sync_cursors()
+  local selections = gather_selections()
+  if #selections == 0 then
+    local term = vim.api.nvim_replace_termcodes('<BS>', true, false, true)
+    vim.schedule(function()
+      vim.api.nvim_feedkeys(term, 'n', true)
+    end)
+    return ''
   end
+  local generation = multi_cursor.current_generation and multi_cursor.current_generation() or nil
+  vim.schedule(function()
+    if generation and multi_cursor.current_generation and multi_cursor.current_generation() ~= generation then
+      return
+    end
+    process_backspace()
+  end)
+  return ''
 end
 
 function M.handle_tab()
@@ -1007,23 +1021,12 @@ function M.handle_shift_tab()
 end
 
 function M.on_insert_pre()
-  local key = vim.v.key
   local char = vim.v.char
-  local mode = vim.api.nvim_get_mode().mode
-  if mode:sub(1, 1) ~= 'i' then
-    return
-  end
-  local backspace_term = vim.api.nvim_replace_termcodes('<BS>', true, false, true)
-  local ctrl_h_term = vim.api.nvim_replace_termcodes('<C-h>', true, false, true)
-  if key == 'BS' or key == 'kb' or key == 'C-h' or key == 'CTRL-H'
-      or key == backspace_term or key == ctrl_h_term or char == '\b' then
-    handle_backspace_pre()
+  local key = vim.v.key
+  if key == 'Tab' or key == 'S-Tab' then
     return
   end
   if not char or char == '' then
-    return
-  end
-  if key == 'Tab' or key == 'S-Tab' then
     return
   end
   multi_cursor.sync_cursors()
