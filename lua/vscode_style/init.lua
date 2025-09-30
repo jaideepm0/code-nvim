@@ -3,6 +3,17 @@ local M = {}
 local default_config = {
   selection_hl = 'Visual',
   max_cursors = 32,
+  mappings = {
+    -- How to set mappings: 'respect' (only if unmapped), 'force' (override), 'skip' (no mappings)
+    strategy = 'respect',
+    -- Enable/disable groups
+    selection = true,        -- Shift+Arrows, Ctrl+Shift+Arrows, Home/End, file boundaries
+    line_ops = true,         -- Alt+Up/Down, Shift+Alt+Up/Down, Ctrl+Shift+K
+    multi_cursor = true,     -- Alt+Click, Ctrl+Alt+Up/Down, Ctrl+D, Ctrl+Shift+L
+    column_selection = true, -- Shift+Alt+Drag/Release
+    tab = true,              -- Tab/Shift+Tab indent/dedent for selections
+    backspace = true,        -- Backspace over active selections
+  },
 }
 
 local state = {
@@ -40,99 +51,68 @@ local function set_mappings()
     return true
   end
 
-  -- Core selection and cursor movement
-  map('<S-Left>', function()
-    actions.select_character('left')
-  end)
-  map('<S-Right>', function()
-    actions.select_character('right')
-  end)
-  map('<S-Up>', function()
-    actions.select_line('up')
-  end)
-  map('<S-Down>', function()
-    actions.select_line('down')
-  end)
-  map('<C-S-Left>', function()
-    actions.select_word('left')
-  end)
-  map('<C-S-Right>', function()
-    actions.select_word('right')
-  end)
-  map('<S-Home>', function()
-    actions.select_to_line_boundary('home')
-  end)
-  map('<S-End>', function()
-    actions.select_to_line_boundary('end')
-  end)
-  map('<C-S-Home>', function()
-    actions.select_to_file_boundary('home')
-  end)
-  map('<C-S-End>', function()
-    actions.select_to_file_boundary('end')
-  end)
-  map('<Tab>', function()
-    actions.handle_tab()
-  end)
-  map('<S-Tab>', function()
-    actions.handle_shift_tab()
-  end)
-  if map_if_unmapped('<BS>', function()
-    return actions.backspace_expr()
-  end, { expr = true }) then
-    state.backspace_mapped = true
+  local strategy = (state.config.mappings and state.config.mappings.strategy) or 'respect'
+  local try_map = function(lhs, rhs, opts)
+    if strategy == 'skip' then return end
+    if strategy == 'respect' then
+      map_if_unmapped(lhs, rhs, opts)
+    else
+      map(lhs, rhs, opts)
+    end
   end
-  if map_if_unmapped('<C-h>', function()
-    return actions.backspace_expr()
-  end, { expr = true }) then
-    state.backspace_mapped = true
+
+  -- Core selection and cursor movement
+  if state.config.mappings.selection ~= false then
+    try_map('<S-Left>', function() actions.select_character('left') end)
+    try_map('<S-Right>', function() actions.select_character('right') end)
+    try_map('<S-Up>', function() actions.select_line('up') end)
+    try_map('<S-Down>', function() actions.select_line('down') end)
+    try_map('<C-S-Left>', function() actions.select_word('left') end)
+    try_map('<C-S-Right>', function() actions.select_word('right') end)
+    try_map('<S-Home>', function() actions.select_to_line_boundary('home') end)
+    try_map('<S-End>', function() actions.select_to_line_boundary('end') end)
+    try_map('<C-S-Home>', function() actions.select_to_file_boundary('home') end)
+    try_map('<C-S-End>', function() actions.select_to_file_boundary('end') end)
+  end
+  if state.config.mappings.tab ~= false then
+    try_map('<Tab>', function() actions.handle_tab() end)
+    try_map('<S-Tab>', function() actions.handle_shift_tab() end)
+  end
+  if state.config.mappings.backspace ~= false then
+    local did = false
+    if strategy == 'respect' then
+      if map_if_unmapped('<BS>', function() return actions.backspace_expr() end, { expr = true }) then did = true end
+      if map_if_unmapped('<C-h>', function() return actions.backspace_expr() end, { expr = true }) then did = true end
+    elseif strategy == 'force' then
+      map('<BS>', function() return actions.backspace_expr() end, { expr = true }); did = true
+      map('<C-h>', function() return actions.backspace_expr() end, { expr = true }); did = true
+    end
+    state.backspace_mapped = did
   end
 
   -- Line and block manipulation
-  map('<M-Up>', function()
-    actions.move_line('up')
-  end)
-  map('<M-Down>', function()
-    actions.move_line('down')
-  end)
-  map('<S-M-Up>', function()
-    actions.copy_line('up')
-  end)
-  map('<S-M-Down>', function()
-    actions.copy_line('down')
-  end)
-  map('<C-S-k>', function()
-    actions.delete_line()
-  end, { expr = false })
+  if state.config.mappings.line_ops ~= false then
+    try_map('<M-Up>', function() actions.move_line('up') end)
+    try_map('<M-Down>', function() actions.move_line('down') end)
+    try_map('<S-M-Up>', function() actions.copy_line('up') end)
+    try_map('<S-M-Down>', function() actions.copy_line('down') end)
+    try_map('<C-S-k>', function() actions.delete_line() end, { expr = false })
+  end
 
   -- Multi-cursor and column selection
-  map('<M-LeftMouse>', function()
-    actions.alt_click_cursor()
-  end)
-  map('<C-M-Up>', function()
-    actions.add_cursor_vertical('up')
-  end)
-  map('<C-M-Down>', function()
-    actions.add_cursor_vertical('down')
-  end)
-  map('<C-d>', function()
-    actions.add_selection_to_next_match()
-  end)
-  map('<C-S-l>', function()
-    actions.select_all_occurrences()
-  end)
-  map('<S-M-Right>', function()
-    actions.expand_selection()
-  end)
-  map('<S-M-Left>', function()
-    actions.shrink_selection()
-  end)
-  map('<S-M-LeftDrag>', function()
-    actions.column_selection_drag_start()
-  end)
-  map('<S-M-LeftRelease>', function()
-    actions.column_selection_drag_end()
-  end)
+  if state.config.mappings.multi_cursor ~= false then
+    try_map('<M-LeftMouse>', function() actions.alt_click_cursor() end)
+    try_map('<C-M-Up>', function() actions.add_cursor_vertical('up') end)
+    try_map('<C-M-Down>', function() actions.add_cursor_vertical('down') end)
+    try_map('<C-d>', function() actions.add_selection_to_next_match() end)
+    try_map('<C-S-l>', function() actions.select_all_occurrences() end)
+    try_map('<S-M-Right>', function() actions.expand_selection() end)
+    try_map('<S-M-Left>', function() actions.shrink_selection() end)
+  end
+  if state.config.mappings.column_selection ~= false then
+    try_map('<S-M-LeftDrag>', function() actions.column_selection_drag_start() end)
+    try_map('<S-M-LeftRelease>', function() actions.column_selection_drag_end() end)
+  end
 end
 
 function M.setup(user_config)
