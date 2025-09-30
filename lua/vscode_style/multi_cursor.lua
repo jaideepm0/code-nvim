@@ -197,7 +197,6 @@ local function ensure_primary()
         right_gravity = false,
       })
     end
-    pcall(vim.api.nvim_win_set_cursor, 0, { line + 1, col })
   end
 end
 
@@ -505,6 +504,28 @@ end
 
 function M.clear_snapshot()
   -- Nothing to clear when snapshotting is disabled.
+end
+
+function M.sync_primary_to_window()
+  ensure_namespace()
+  if state.current_buf ~= current_buf() then
+    M.switch_buffer()
+  end
+  local pos = vim.api.nvim_win_get_cursor(0)
+  local line = math.max(pos[1], 1) - 1
+  local col = math.max(pos[2], 0)
+  local cursor = state.cursors[1]
+  if cursor then
+    cursor.line = line
+    cursor.col = col
+    cursor.is_primary = true
+    cursor.id = vim.api.nvim_buf_set_extmark(buf(), state.ns, line, col, {
+      id = cursor.id,
+      right_gravity = false,
+    })
+  else
+    state.cursors[1] = create_cursor(line, col, { is_primary = true })
+  end
 end
 
 function M.add_cursor_relative(cursor, delta_line)
