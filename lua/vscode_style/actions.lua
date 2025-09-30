@@ -435,6 +435,66 @@ local function selection_entries_with_text(selections)
   return entries
 end
 
+local function collect_selection_lines(selections)
+  local seen = {}
+  local lines = {}
+  for _, sel in ipairs(selections) do
+    local start_line = sel.start.line
+    local start_col = sel.start.col
+    local finish_line = sel.finish.line
+    local finish_col = sel.finish.col
+    if finish_line < start_line or (finish_line == start_line and finish_col < start_col) then
+      start_line, finish_line = finish_line, start_line
+      start_col, finish_col = finish_col, start_col
+    end
+    if start_line == finish_line and start_col == finish_col then
+      finish_line = start_line
+    end
+    if finish_line > start_line and finish_col == 0 then
+      finish_line = finish_line - 1
+    end
+    for line = start_line, finish_line do
+      if not seen[line] then
+        seen[line] = true
+        lines[#lines + 1] = line
+      end
+    end
+  end
+  table.sort(lines)
+  return lines
+end
+
+local function adjust_cursor_columns(deltas)
+  if not deltas or next(deltas) == nil then
+    multi_cursor.update_highlights()
+    return
+  end
+  multi_cursor.for_each(function(cursor)
+    local delta = deltas[cursor.line] or 0
+    if delta ~= 0 then
+      local new_col = cursor.col + delta
+      if new_col < 0 then new_col = 0 end
+      multi_cursor.update_position(cursor, cursor.line, new_col)
+    end
+    if cursor.selection then
+      local anchor_line = cursor.selection.anchor.line
+      local active_line = cursor.selection.active.line
+      local anchor_delta = deltas[anchor_line] or 0
+      local active_delta = deltas[active_line] or 0
+      if anchor_delta ~= 0 or active_delta ~= 0 then
+        local anchor_col = cursor.selection.anchor.col + anchor_delta
+        if anchor_col < 0 then anchor_col = 0 end
+        local active_col = cursor.selection.active.col + active_delta
+        if active_col < 0 then active_col = 0 end
+        multi_cursor.set_selection(cursor, { line = anchor_line, col = anchor_col }, { line = active_line, col = active_col })
+      else
+        multi_cursor.set_selection(cursor, cursor.selection.anchor, cursor.selection.active, { keep_anchor = true })
+      end
+    end
+  end)
+  multi_cursor.update_highlights()
+end
+
 local function apply_selection_entries(entries)
   table.sort(entries, function(a, b)
     local sa = a.selection.start
