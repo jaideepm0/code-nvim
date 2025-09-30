@@ -268,7 +268,44 @@ local defaults = {
   feature_flags = default_feature_flags,
   autocommands = default_autocommands,
   notify = vim.notify,
+  debug = {
+    enabled = false,
+    backspace = false,
+    log = nil,
+  },
 }
+
+local function normalize_debug(user)
+  local cfg = vim.deepcopy(defaults.debug)
+  if user == nil then
+    return cfg
+  end
+  if user == true then
+    cfg.enabled = true
+    cfg.backspace = true
+    return cfg
+  end
+  if type(user) ~= 'table' then
+    return cfg
+  end
+  if user.enabled ~= nil then
+    cfg.enabled = not not user.enabled
+  end
+  if user.backspace ~= nil then
+    cfg.backspace = not not user.backspace
+  else
+    cfg.backspace = cfg.enabled or cfg.backspace
+  end
+  if type(user.log) == 'function' then
+    cfg.log = user.log
+  elseif user.log == false then
+    cfg.log = false
+  end
+  if cfg.enabled and cfg.backspace == nil then
+    cfg.backspace = true
+  end
+  return cfg
+end
 
 local function normalize_feature_flags(mappings, feature_flags)
   local flags = vim.deepcopy(default_feature_flags)
@@ -410,6 +447,7 @@ function M.normalize(user_config)
   cfg.feature_flags = normalize_feature_flags(user_config.mappings, user_config.feature_flags)
   cfg.autocommands = normalize_autocommands(user_config.autocommands)
   cfg.notify = normalize_notify(user_config.notify)
+  cfg.debug = normalize_debug(user_config.debug)
 
   local overrides = user_config.keymaps
   if overrides == nil and type(user_config.mappings) == 'table' then
