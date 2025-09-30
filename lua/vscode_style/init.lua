@@ -10,6 +10,8 @@ local state = {
   cursors = {},
   config = default_config,
   autocmd_group = nil,
+  snapshots = {},
+  backspace_mapped = false,
 }
 
 local actions = require('vscode_style.actions')
@@ -32,9 +34,10 @@ local function set_mappings()
 
   local map_if_unmapped = function(lhs, rhs, opts)
     if vim.fn.maparg(lhs, 'i') ~= '' then
-      return
+      return false
     end
     map(lhs, rhs, opts)
+    return true
   end
 
   -- Core selection and cursor movement
@@ -74,12 +77,16 @@ local function set_mappings()
   map('<S-Tab>', function()
     actions.handle_shift_tab()
   end)
-  map_if_unmapped('<BS>', function()
+  if map_if_unmapped('<BS>', function()
     return actions.backspace_expr()
-  end, { expr = true })
-  map_if_unmapped('<C-h>', function()
+  end, { expr = true }) then
+    state.backspace_mapped = true
+  end
+  if map_if_unmapped('<C-h>', function()
     return actions.backspace_expr()
-  end, { expr = true })
+  end, { expr = true }) then
+    state.backspace_mapped = true
+  end
 
   -- Line and block manipulation
   map('<M-Up>', function()
@@ -157,6 +164,7 @@ function M.setup(user_config)
   vim.api.nvim_create_autocmd('InsertLeave', {
     group = state.autocmd_group,
     callback = function()
+      multi_cursor.save_snapshot()
       multi_cursor.clear_all_selections()
       multi_cursor.update_highlights()
     end,
@@ -165,6 +173,18 @@ function M.setup(user_config)
     group = state.autocmd_group,
     callback = function()
       multi_cursor.switch_buffer()
+    end,
+  })
+  vim.api.nvim_create_autocmd('InsertEnter', {
+    group = state.autocmd_group,
+    callback = function()
+      multi_cursor.restore_snapshot()
+    end,
+  })
+  vim.api.nvim_create_autocmd({ 'BufWipeout', 'BufDelete' }, {
+    group = state.autocmd_group,
+    callback = function(args)
+      multi_cursor.clear_snapshot(args.buf)
     end,
   })
   set_mappings()

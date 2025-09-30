@@ -1025,6 +1025,31 @@ end
 function M.on_insert_pre()
   local char = vim.v.char
   local key = vim.v.key
+  if not state.backspace_mapped then
+    local keyname = vim.fn.keytrans(key or '')
+    if keyname == '<BS>' or keyname == '<C-H>' then
+      multi_cursor.sync_cursors()
+      local snapshot = gather_selections()
+      if #snapshot == 0 then
+        return
+      end
+      local target_buf = vim.api.nvim_get_current_buf()
+      local generation = multi_cursor.current_generation and multi_cursor.current_generation() or nil
+      vim.v.char = ''
+      vim.schedule(function()
+        if generation and multi_cursor.current_generation and multi_cursor.current_generation() ~= generation then
+          return
+        end
+        if not vim.api.nvim_buf_is_valid(target_buf) then
+          return
+        end
+        vim.api.nvim_buf_call(target_buf, function()
+          process_backspace(snapshot)
+        end)
+      end)
+      return
+    end
+  end
   if key == 'Tab' or key == 'S-Tab' then
     return
   end
