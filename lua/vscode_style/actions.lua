@@ -7,6 +7,30 @@ local log_levels = vim.log.levels
 
 local backspace_cache
 
+local function debug_backspace(step, payload)
+  local cfg = state and state.config and state.config.debug
+  if not cfg or not cfg.enabled or cfg.backspace == false then
+    return
+  end
+  local sink = cfg.log
+  if sink == nil then
+    sink = print
+  elseif sink == false then
+    return
+  end
+  local ok, message
+  if type(payload) == 'table' then
+    ok, message = pcall(vim.inspect, payload)
+    if not ok then
+      message = tostring(payload)
+    end
+  else
+    message = tostring(payload)
+  end
+  local log_line = string.format('[vscode_style][backspace][%s] %s', step, message)
+  pcall(sink, log_line)
+end
+
 local function canonicalize_backspace(name)
   if type(name) ~= 'string' or name == '' then
     return nil
@@ -62,23 +86,29 @@ local function is_backspace_key(key)
   local cache = ensure_backspace_cache()
   for _, raw in ipairs(cache.raw) do
     if raw ~= '' and key == raw then
+      debug_backspace('raw-match', { key = key, raw = raw })
       return true
     end
   end
   local ok, name = pcall(vim.fn.keytrans, key)
   if not ok or not name then
+    debug_backspace('keytrans-error', { key = key, error = ok and 'nil-name' or name })
     return false
   end
   if cache.names[name] then
+    debug_backspace('name-match', { key = key, name = name })
     return true
   end
   if name == '^?' then -- DEL is often produced by terminals for backspace
+    debug_backspace('del-match', { key = key })
     return true
   end
   local canonical = canonicalize_backspace(name)
   if canonical and cache.canonical[canonical] then
+    debug_backspace('canonical-match', { key = key, name = name, canonical = canonical })
     return true
   end
+  debug_backspace('no-match', { key = key, name = name, canonical = canonical })
   return false
 end
 
@@ -1022,13 +1052,17 @@ end
 local function process_backspace(snapshot)
   multi_cursor.sync_cursors()
   local selections = snapshot or gather_selections()
+  debug_backspace('process-start', { snapshot = snapshot and #snapshot or 0, selections = #selections })
   if #selections == 0 then
+    debug_backspace('process-no-selection', {})
     return false
   end
   delete_selections(selections)
+  debug_backspace('process-delete', { count = #selections })
   multi_cursor.sync_cursors()
   collapse_deleted_selections(selections)
   multi_cursor.update_highlights()
+  debug_backspace('process-complete', {})
   return true
 end
 
@@ -1042,18 +1076,27 @@ function M.backspace_expr()
   multi_cursor.sync_cursors()
   local snapshot = gather_selections()
   if #snapshot == 0 then
+    debug_backspace('expr-pass-through', { reason = 'no-selection' })
     return vim.api.nvim_replace_termcodes('<BS>', true, false, true)
   end
   local target_buf = vim.api.nvim_get_current_buf()
   local generation = multi_cursor.current_generation and multi_cursor.current_generation() or nil
+  debug_backspace('expr-scheduled', {
+    selections = #snapshot,
+    buf = target_buf,
+    generation = generation,
+  })
   vim.schedule(function()
     if generation and multi_cursor.current_generation and multi_cursor.current_generation() ~= generation then
+      debug_backspace('expr-abort-generation', { expected = generation, actual = multi_cursor.current_generation and multi_cursor.current_generation() })
       return
     end
     if not vim.api.nvim_buf_is_valid(target_buf) then
+      debug_backspace('expr-abort-invalid-buf', { buf = target_buf })
       return
     end
     vim.api.nvim_buf_call(target_buf, function()
+      debug_backspace('expr-run', { buf = target_buf })
       process_backspace(snapshot)
     end)
   end)
@@ -1129,23 +1172,37 @@ end
 function M.on_insert_pre()
   local char = vim.v.char
   local key = vim.v.key
+  debug_backspace('insert-pre', {
+    char = char,
+    key = key,
+    mapped = state.backspace_mapped,
+  })
   if not state.backspace_mapped and is_backspace_key(key) then
     multi_cursor.sync_cursors()
     local snapshot = gather_selections()
     if #snapshot == 0 then
+      debug_backspace('insert-pre-no-selection', {})
       return
     end
     local target_buf = vim.api.nvim_get_current_buf()
     local generation = multi_cursor.current_generation and multi_cursor.current_generation() or nil
     vim.v.char = ''
+    debug_backspace('insert-pre-schedule', {
+      selections = #snapshot,
+      buf = target_buf,
+      generation = generation,
+    })
     vim.schedule(function()
       if generation and multi_cursor.current_generation and multi_cursor.current_generation() ~= generation then
+        debug_backspace('insert-pre-abort-generation', { expected = generation, actual = multi_cursor.current_generation and multi_cursor.current_generation() })
         return
       end
       if not vim.api.nvim_buf_is_valid(target_buf) then
+        debug_backspace('insert-pre-abort-invalid-buf', { buf = target_buf })
         return
       end
       vim.api.nvim_buf_call(target_buf, function()
+        debug_backspace('insert-pre-run', { buf = target_buf })
         process_backspace(snapshot)
       end)
     end)

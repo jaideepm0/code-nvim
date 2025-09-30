@@ -41,6 +41,7 @@ Call `setup()` explicitly. This plugin is intentionally non‑opinionated and do
 - `feature_flags` / `mappings` – enable/disable whole shortcut groups (`selection`, `line_ops`, `multi_cursor`, `column_selection`, `tab`, `backspace`).
 - `autocommands` – opt in/out of helper autocmds (`insert_char_pre`, `insert_leave`, `insert_enter`, `buf_enter`, `buf_cleanup`).
 - `notify` – custom notification function or `false` to stay quiet.
+- `debug` – set to `true` or `{ enabled = true, backspace = true }` to print detailed backspace traces (use a custom `log = function(msg) ... end` to redirect).
 - `keymaps` – override individual shortcuts (change `lhs`, tweak `opts`/`desc`, disable with `false`, or supply your own `callback`).
 
 Example customisation:
