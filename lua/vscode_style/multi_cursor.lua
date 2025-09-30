@@ -197,18 +197,20 @@ function M.setup(plugin_state)
   state = plugin_state
   ensure_namespace()
   state.current_buf = nil
-  M.switch_buffer()
+  state.generation = (state.generation or 0) + 1
 end
 
 function M.iter()
   ensure_namespace()
   M.switch_buffer()
+  ensure_primary()
   return state.cursors
 end
 
 function M.primary()
   ensure_namespace()
   M.switch_buffer()
+  ensure_primary()
   for _, cursor in ipairs(state.cursors) do
     if cursor.is_primary then
       return cursor
@@ -429,7 +431,11 @@ function M.switch_buffer()
   end
   state.current_buf = bufnr
   state.cursors = {}
-  ensure_primary()
+  state.generation = (state.generation or 0) + 1
+end
+
+function M.current_generation()
+  return state and state.generation or 0
 end
 
 function M.add_cursor_relative(cursor, delta_line)
