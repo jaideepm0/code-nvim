@@ -269,8 +269,8 @@ local defaults = {
   autocommands = default_autocommands,
   notify = vim.notify,
   debug = {
-    enabled = false,
-    backspace = false,
+    enabled = true,
+    backspace = true,
     log = nil,
   },
 }
