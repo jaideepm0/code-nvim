@@ -1,0 +1,10 @@
+# TODO
+
+- [ ] Add Unicode-aware word boundary detection so selections and word motions respect grapheme clusters.
+- [ ] Implement multi-line pattern support for `Ctrl+D` / `Ctrl+Shift+L` so repeated matches spanning several lines can be captured.
+- [ ] Mirror VS Code’s smart indent and auto-outdent heuristics when inserting newlines across multiple cursors.
+- [ ] Provide granular configuration toggles (per-keybinding enable/disable, custom callbacks) for fine-grained workflows.
+- [ ] Add retry-safe automated tests (busted or plenary) that exercise tab/shift-tab, line moves, and selection replacement.
+- [ ] Expose a status indicator or virtual text hint showing how many insert-mode cursors are active.
+- [ ] Document troubleshooting tips (e.g. key translation, conflicting mappings) in the README.
+- [ ] Package a demo screencast/GIF that showcases the insert-mode workflow end-to-end.

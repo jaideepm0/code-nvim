@@ -2,35 +2,27 @@ local M = {}
 
 local state
 local multi_cursor
+local utils = require('vscode_style.utils')
+local config_module = require('vscode_style.config')
 
 local function buf()
-  return vim.api.nvim_get_current_buf()
+  return utils.buf()
 end
 
 local function clamp(value, min_val, max_val)
-  if value < min_val then
-    return min_val
-  end
-  if value > max_val then
-    return max_val
-  end
-  return value
+  return utils.clamp(value, min_val, max_val)
 end
 
 local function line_count()
-  return vim.api.nvim_buf_line_count(buf())
+  return utils.line_count()
 end
 
 local function get_line(line)
-  if line < 0 then
-    return ''
-  end
-  local lines = vim.api.nvim_buf_get_lines(buf(), line, line + 1, true)
-  return lines[1] or ''
+  return utils.get_line(line)
 end
 
 local function copy_pos(pos)
-  return { line = pos.line, col = pos.col }
+  return utils.copy_pos(pos)
 end
 
 local function feedkeys(keys)
@@ -342,7 +334,9 @@ local function apply_selection_entries(entries)
   end)
   for _, entry in ipairs(entries) do
     local sel = entry.selection
-    vim.api.nvim_buf_set_text(buf(), sel.start.line, sel.start.col, sel.finish.line, sel.finish.col, entry.text)
+    utils.safe_buf_op(function()
+      vim.api.nvim_buf_set_text(buf(), sel.start.line, sel.start.col, sel.finish.line, sel.finish.col, entry.text)
+    end, 'Failed to apply selection changes')
   end
 end
 
@@ -447,38 +441,63 @@ local function apply_move_line(range, direction)
     if start_line == 0 then
       return
     end
-    local block = vim.api.nvim_buf_get_lines(buf(), start_line, end_line + 1, false)
-    vim.api.nvim_buf_set_lines(buf(), start_line, end_line + 1, false, {})
-    vim.api.nvim_buf_set_lines(buf(), start_line - 1, start_line - 1, false, block)
+    local ok = utils.safe_buf_op(function()
+      local block = vim.api.nvim_buf_get_lines(buf(), start_line, end_line + 1, false)
+      vim.api.nvim_buf_set_lines(buf(), start_line, end_line + 1, false, {})
+      vim.api.nvim_buf_set_lines(buf(), start_line - 1, start_line - 1, false, block)
+    end, 'Failed to move lines up')
+    
+    if not ok then
+      return
+    end
   else
     if end_line >= total_lines - 1 then
       return
     end
-    local block = vim.api.nvim_buf_get_lines(buf(), start_line, end_line + 1, false)
-    vim.api.nvim_buf_set_lines(buf(), start_line, end_line + 1, false, {})
-    vim.api.nvim_buf_set_lines(buf(), start_line + 1, start_line + 1, false, block)
+    local ok = utils.safe_buf_op(function()
+      local block = vim.api.nvim_buf_get_lines(buf(), start_line, end_line + 1, false)
+      vim.api.nvim_buf_set_lines(buf(), start_line, end_line + 1, false, {})
+      vim.api.nvim_buf_set_lines(buf(), start_line + 1, start_line + 1, false, block)
+    end, 'Failed to move lines down')
+    
+    if not ok then
+      return
+    end
   end
 end
 
 local function apply_copy_line(range, direction)
   local start_line = range.start_line
   local end_line = range.end_line
-  local block = vim.api.nvim_buf_get_lines(buf(), start_line, end_line + 1, false)
-  if direction == 'up' then
-    vim.api.nvim_buf_set_lines(buf(), start_line, start_line, false, block)
-  else
-    vim.api.nvim_buf_set_lines(buf(), end_line + 1, end_line + 1, false, block)
+  
+  local ok = utils.safe_buf_op(function()
+    local block = vim.api.nvim_buf_get_lines(buf(), start_line, end_line + 1, false)
+    if direction == 'up' then
+      vim.api.nvim_buf_set_lines(buf(), start_line, start_line, false, block)
+    else
+      vim.api.nvim_buf_set_lines(buf(), end_line + 1, end_line + 1, false, block)
+    end
+  end, 'Failed to copy lines')
+  
+  if not ok then
+    return
   end
 end
 
 local function apply_delete_line(range)
-  vim.api.nvim_buf_set_lines(buf(), range.start_line, range.end_line + 1, false, {})
-  if range.start_line >= line_count() then
-    local target = line_count()
-    if target == 0 then
-      target = 1
+  local ok = utils.safe_buf_op(function()
+    vim.api.nvim_buf_set_lines(buf(), range.start_line, range.end_line + 1, false, {})
+    if range.start_line >= line_count() then
+      local target = line_count()
+      if target == 0 then
+        target = 1
+      end
+      vim.api.nvim_buf_set_lines(buf(), target - 1, target - 1, false, { '' })
     end
-    vim.api.nvim_buf_set_lines(buf(), target - 1, target - 1, false, { '' })
+  end, 'Failed to delete lines')
+  
+  if not ok then
+    return
   end
 end
 
@@ -850,7 +869,9 @@ local function delete_selections(selections)
     return a.start.line > b.start.line
   end)
   for _, sel in ipairs(selections) do
-    vim.api.nvim_buf_set_text(buf(), sel.start.line, sel.start.col, sel.finish.line, sel.finish.col, {})
+    utils.safe_buf_op(function()
+      vim.api.nvim_buf_set_text(buf(), sel.start.line, sel.start.col, sel.finish.line, sel.finish.col, {})
+    end, 'Failed to delete selection')
   end
 end
 

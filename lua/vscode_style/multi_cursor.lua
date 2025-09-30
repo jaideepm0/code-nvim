@@ -1,23 +1,15 @@
 local M = {}
 
 local state
+local utils = require('vscode_style.utils')
+local config_module = require('vscode_style.config')
 
 local function current_buf()
-  return vim.api.nvim_get_current_buf()
-end
-
-local function clamp(value, low, high)
-  if value < low then
-    return low
-  end
-  if value > high then
-    return high
-  end
-  return value
+  return utils.buf()
 end
 
 local function buf()
-  return vim.api.nvim_get_current_buf()
+  return utils.buf()
 end
 
 local function ensure_namespace()
@@ -29,18 +21,33 @@ end
 local function create_cursor(line, col, opts)
   opts = opts or {}
   local buf_handle = buf()
-  local total_lines = vim.api.nvim_buf_line_count(buf_handle)
-  if total_lines == 0 then
-    vim.api.nvim_buf_set_lines(buf_handle, 0, -1, false, { '' })
+  
+  -- Ensure buffer has at least one line
+  local ok, total_lines = pcall(vim.api.nvim_buf_line_count, buf_handle)
+  if not ok or total_lines == 0 then
+    local success = utils.safe_buf_op(function()
+      vim.api.nvim_buf_set_lines(buf_handle, 0, -1, false, { '' })
+    end, 'Failed to initialize buffer')
+    if not success then
+      return nil
+    end
     total_lines = 1
   end
-  line = clamp(line or 0, 0, total_lines - 1)
-  local line_text = vim.api.nvim_buf_get_lines(buf_handle, line, line + 1, true)[1] or ''
-  col = clamp(col or 0, 0, #line_text)
+  
+  line = utils.clamp(line or 0, 0, total_lines - 1)
+  local line_text = utils.get_line(line)
+  col = utils.clamp(col or 0, 0, #line_text)
 
-  local mark_id = vim.api.nvim_buf_set_extmark(buf_handle, state.ns, line, col, {
-    right_gravity = false,
-  })
+  -- Create extmark with error handling
+  local ok_mark, mark_id = utils.safe_buf_op(function()
+    return vim.api.nvim_buf_set_extmark(buf_handle, state.ns, line, col, {
+      right_gravity = false,
+    })
+  end, 'Failed to create cursor extmark')
+  
+  if not ok_mark then
+    return nil
+  end
 
   local cursor = {
     id = mark_id,
@@ -52,27 +59,24 @@ local function create_cursor(line, col, opts)
     selection_stack = {},
     is_primary = opts.is_primary or false,
   }
+  
+  -- Execute callback
+  config_module.execute_callback(state.config, 'on_cursor_add', cursor)
+  
   return cursor
 end
 
 local function delete_highlight(cursor)
   if cursor.highlight_id then
-    pcall(vim.api.nvim_buf_del_extmark, buf(), state.ns, cursor.highlight_id)
+    utils.safe_buf_op(function()
+      vim.api.nvim_buf_del_extmark(buf(), state.ns, cursor.highlight_id)
+    end, 'Failed to delete highlight')
     cursor.highlight_id = nil
   end
 end
 
 local function sanitize_position(pos)
-  local buf_handle = buf()
-  local total_lines = vim.api.nvim_buf_line_count(buf_handle)
-  if total_lines == 0 then
-    vim.api.nvim_buf_set_lines(buf_handle, 0, -1, false, { '' })
-    total_lines = 1
-  end
-  local line = clamp((pos and pos.line) or 0, 0, total_lines - 1)
-  local line_text = vim.api.nvim_buf_get_lines(buf_handle, line, line + 1, true)[1] or ''
-  local col = clamp((pos and pos.col) or 0, 0, #line_text)
-  return line, col
+  return utils.sanitize_position(pos)
 end
 
 local function sanitize_selection(cursor)
@@ -90,8 +94,11 @@ local function sanitize_selection(cursor)
 end
 
 local function sync_cursor_from_extmark(cursor)
-  local pos = vim.api.nvim_buf_get_extmark_by_id(buf(), state.ns, cursor.id, { details = true })
-  if pos and pos[1] then
+  local ok, pos = utils.safe_buf_op(function()
+    return vim.api.nvim_buf_get_extmark_by_id(buf(), state.ns, cursor.id, { details = true })
+  end, 'Failed to get extmark position')
+  
+  if ok and pos and pos[1] then
     cursor.line = pos[1]
     cursor.col = pos[2]
   else
@@ -99,10 +106,13 @@ local function sync_cursor_from_extmark(cursor)
     local current = vim.api.nvim_win_get_cursor(0)
     cursor.line = current[1] - 1
     cursor.col = current[2]
-    cursor.id = vim.api.nvim_buf_set_extmark(buf(), state.ns, cursor.line, cursor.col, {
-      id = cursor.id,
-      right_gravity = false,
-    })
+    
+    utils.safe_buf_op(function()
+      cursor.id = vim.api.nvim_buf_set_extmark(buf(), state.ns, cursor.line, cursor.col, {
+        id = cursor.id,
+        right_gravity = false,
+      })
+    end, 'Failed to recreate extmark')
   end
 end
 
@@ -133,7 +143,9 @@ local function ensure_primary()
   if #state.cursors == 0 then
     local pos = vim.api.nvim_win_get_cursor(0)
     local cursor = create_cursor(math.max(pos[1], 1) - 1, math.max(pos[2], 0), { is_primary = true })
-    table.insert(state.cursors, cursor)
+    if cursor then
+      table.insert(state.cursors, cursor)
+    end
   end
   sort_cursors()
   local primary
@@ -154,10 +166,13 @@ local function ensure_primary()
     if line ~= primary.line or col ~= primary.col then
       primary.line = line
       primary.col = col
-      primary.id = vim.api.nvim_buf_set_extmark(buf(), state.ns, line, col, {
-        id = primary.id,
-        right_gravity = false,
-      })
+      
+      utils.safe_buf_op(function()
+        primary.id = vim.api.nvim_buf_set_extmark(buf(), state.ns, line, col, {
+          id = primary.id,
+          right_gravity = false,
+        })
+      end, 'Failed to update primary cursor extmark')
     end
     pcall(vim.api.nvim_win_set_cursor, 0, { line + 1, col })
   end
@@ -184,13 +199,19 @@ local function apply_highlight(cursor)
   local anchor, active = cursor.selection.anchor, cursor.selection.active
   local start_pos, end_pos = normalized_range(anchor, active)
 
-  cursor.highlight_id = vim.api.nvim_buf_set_extmark(buf(), state.ns, start_pos.line, start_pos.col, {
-    end_row = end_pos.line,
-    end_col = end_pos.col,
-    hl_group = state.config.selection_hl or 'Visual',
-    right_gravity = false,
-    end_right_gravity = false,
-  })
+  local ok, mark_id = utils.safe_buf_op(function()
+    return vim.api.nvim_buf_set_extmark(buf(), state.ns, start_pos.line, start_pos.col, {
+      end_row = end_pos.line,
+      end_col = end_pos.col,
+      hl_group = state.config.selection_hl or 'Visual',
+      right_gravity = false,
+      end_right_gravity = false,
+    })
+  end, 'Failed to create selection highlight')
+  
+  if ok then
+    cursor.highlight_id = mark_id
+  end
 end
 
 function M.setup(plugin_state)
@@ -251,22 +272,32 @@ function M.update_position(cursor, line, col)
   ensure_namespace()
   M.switch_buffer()
   local buf_handle = buf()
-  local total_lines = vim.api.nvim_buf_line_count(buf_handle)
-  if total_lines == 0 then
-    vim.api.nvim_buf_set_lines(buf_handle, 0, -1, false, { '' })
+  
+  -- Ensure buffer has at least one line
+  local ok, total_lines = pcall(vim.api.nvim_buf_line_count, buf_handle)
+  if not ok or total_lines == 0 then
+    utils.safe_buf_op(function()
+      vim.api.nvim_buf_set_lines(buf_handle, 0, -1, false, { '' })
+    end, 'Failed to initialize buffer')
     total_lines = 1
   end
-  line = clamp(line, 0, total_lines - 1)
-  local text = vim.api.nvim_buf_get_lines(buf_handle, line, line + 1, true)[1] or ''
-  col = clamp(col, 0, #text)
+  
+  line = utils.clamp(line, 0, total_lines - 1)
+  local text = utils.get_line(line)
+  col = utils.clamp(col, 0, #text)
+  
   cursor.line = line
   cursor.col = col
-  cursor.id = vim.api.nvim_buf_set_extmark(buf_handle, state.ns, line, col, {
-    id = cursor.id,
-    right_gravity = false,
-  })
+  
+  utils.safe_buf_op(function()
+    cursor.id = vim.api.nvim_buf_set_extmark(buf_handle, state.ns, line, col, {
+      id = cursor.id,
+      right_gravity = false,
+    })
+  end, 'Failed to update cursor position')
+  
   if cursor.is_primary then
-    vim.api.nvim_win_set_cursor(0, { line + 1, col })
+    pcall(vim.api.nvim_win_set_cursor, 0, { line + 1, col })
   end
 end
 
@@ -275,6 +306,9 @@ function M.clear_selection(cursor)
   cursor.selection = nil
   cursor.selection_stack = {}
   delete_highlight(cursor)
+  
+  -- Execute callback
+  config_module.execute_callback(state.config, 'on_selection_change', state.cursors)
 end
 
 function M.clear_all_selections()
@@ -344,8 +378,13 @@ function M.remove_cursor(cursor)
   for idx, cur in ipairs(state.cursors) do
     if cur == cursor then
       delete_highlight(cur)
-      pcall(vim.api.nvim_buf_del_extmark, buf(), state.ns, cur.id)
+      utils.safe_buf_op(function()
+        vim.api.nvim_buf_del_extmark(buf(), state.ns, cur.id)
+      end, 'Failed to delete cursor extmark')
       table.remove(state.cursors, idx)
+      
+      -- Execute callback
+      config_module.execute_callback(state.config, 'on_cursor_remove', cursor)
       break
     end
   end
@@ -391,11 +430,15 @@ function M.replace_all_cursors(cursor_defs)
   M.switch_buffer()
   local current = state.current_buf
   if current then
-    pcall(vim.api.nvim_buf_clear_namespace, current, state.ns, 0, -1)
+    utils.safe_buf_op(function()
+      vim.api.nvim_buf_clear_namespace(current, state.ns, 0, -1)
+    end, 'Failed to clear namespace')
   end
   for _, cursor in ipairs(state.cursors) do
     delete_highlight(cursor)
-    pcall(vim.api.nvim_buf_del_extmark, buf(), state.ns, cursor.id)
+    utils.safe_buf_op(function()
+      vim.api.nvim_buf_del_extmark(buf(), state.ns, cursor.id)
+    end, 'Failed to delete extmark')
   end
   state.cursors = {}
   local limit = state.config.max_cursors or 32
@@ -403,16 +446,18 @@ function M.replace_all_cursors(cursor_defs)
   for idx = 1, math.min(#cursor_defs, limit) do
     local def = cursor_defs[idx]
     local cursor = create_cursor(def.line, def.col, { is_primary = def.is_primary })
-    cursor.anchor = def.anchor and { line = def.anchor.line, col = def.anchor.col } or nil
-    cursor.selection = def.selection and {
-      anchor = vim.deepcopy(def.selection.anchor),
-      active = vim.deepcopy(def.selection.active),
-    } or nil
-    sanitize_selection(cursor)
-    if cursor.selection then
-      apply_highlight(cursor)
+    if cursor then
+      cursor.anchor = def.anchor and { line = def.anchor.line, col = def.anchor.col } or nil
+      cursor.selection = def.selection and {
+        anchor = vim.deepcopy(def.selection.anchor),
+        active = vim.deepcopy(def.selection.active),
+      } or nil
+      sanitize_selection(cursor)
+      if cursor.selection then
+        apply_highlight(cursor)
+      end
+      table.insert(state.cursors, cursor)
     end
-    table.insert(state.cursors, cursor)
   end
   if truncated then
     vim.notify('Reached maximum cursor count; extra cursors were ignored', vim.log.levels.WARN)
@@ -428,11 +473,15 @@ function M.switch_buffer()
     return
   end
   if state.current_buf and vim.api.nvim_buf_is_valid(state.current_buf) then
-    pcall(vim.api.nvim_buf_clear_namespace, state.current_buf, state.ns, 0, -1)
+    utils.safe_buf_op(function()
+      vim.api.nvim_buf_clear_namespace(state.current_buf, state.ns, 0, -1)
+    end, 'Failed to clear namespace')
   end
   state.current_buf = bufnr
   state.cursors = {}
   state.generation = (state.generation or 0) + 1
+  
+  config_module.log(state.config, string.format('Switched to buffer %d', bufnr), 'debug')
 end
 
 function M.current_generation()
