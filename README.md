@@ -73,4 +73,5 @@ require("vscode_style").setup({
 - Behaves best with `set mouse=a` if you plan to use Shift+Alt drags for wider selections.
 - Default mappings are added only when free; use `mapping_strategy = "force"` to override (previous bindings are restored if you disable the plugin later).
 - Backspace interception happens without redefining your keys; if you disable the feature flag the editor reverts to native behaviour immediately.
+- Multi-cursor bindings are currently disabled by default while their state tracking is being rebuilt; enable the `multi_cursor` feature flag once the redesign lands.
 - Normal mode remains untouched—hit `<Esc>` whenever you want native motions back.
