@@ -6,6 +6,7 @@ local multi_cursor
 local log_levels = vim.log.levels
 
 local backspace_cache
+local backspace_listener_id
 
 local function debug_backspace(step, payload)
   local cfg = state and state.config and state.config.debug
@@ -42,6 +43,69 @@ local function canonicalize_backspace(name)
     return nil
   end
   return cleaned
+end
+
+local function ensure_dynamic_backspace_mapping(name, key)
+  if not name or name == '' then
+    debug_backspace('dynamic-map-missing-name', { key = key })
+    return
+  end
+  state.dynamic_backspace_keys = state.dynamic_backspace_keys or {}
+  if state.dynamic_backspace_keys[name] then
+    return
+  end
+  if vim.fn.maparg(name, 'i') ~= '' then
+    debug_backspace('dynamic-map-existing', { lhs = name })
+    return
+  end
+  local opts = { expr = true, silent = true, desc = 'vscode_style backspace dynamic' }
+  local ok, err = pcall(vim.keymap.set, 'i', name, function()
+    debug_backspace('dynamic-map-trigger', { lhs = name })
+    return M.backspace_expr()
+  end, opts)
+  if ok then
+    state.dynamic_backspace_keys[name] = true
+    state.backspace_mapped = true
+    debug_backspace('dynamic-map-added', { lhs = name })
+  else
+    debug_backspace('dynamic-map-failed', { lhs = name, err = err })
+  end
+end
+
+local function on_key_listener(key)
+  if not state or not state.config then
+    return
+  end
+  debug_backspace('on-key-raw', { key = key, mode = vim.api.nvim_get_mode().mode })
+  if vim.api.nvim_get_mode().mode:sub(1, 1) ~= 'i' then
+    return
+  end
+  if not key or key == '' then
+    return
+  end
+  if is_backspace_key(key) then
+    local ok, name = pcall(vim.fn.keytrans, key)
+    if ok and name and name ~= '' then
+      debug_backspace('on-key-backspace', { key = key, name = name })
+      ensure_dynamic_backspace_mapping(name, key)
+    else
+      debug_backspace('on-key-backspace-untranslated', { key = key, error = ok and 'nil-name' or name })
+    end
+  end
+end
+
+local function install_backspace_listener()
+  if backspace_listener_id then
+    pcall(vim.on_key, nil, backspace_listener_id)
+    backspace_listener_id = nil
+  end
+  local ok, id = pcall(vim.on_key, on_key_listener)
+  if ok then
+    backspace_listener_id = id
+    debug_backspace('listener-installed', { id = id })
+  else
+    debug_backspace('listener-install-failed', { error = id })
+  end
 end
 
 local function ensure_backspace_cache()
@@ -691,6 +755,7 @@ end
 function M.setup(plugin_state, mc)
   state = plugin_state
   multi_cursor = mc
+  install_backspace_listener()
 end
 
 function M.select_character(direction)
