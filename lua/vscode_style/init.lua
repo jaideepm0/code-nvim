@@ -64,6 +64,9 @@ local function set_mappings()
   map('<BS>', function()
     actions.handle_backspace()
   end)
+  map('<C-h>', function()
+    actions.handle_backspace()
+  end)
   map('<Tab>', function()
     actions.handle_tab()
   end)
@@ -119,6 +122,9 @@ local function set_mappings()
 end
 
 function M.setup(user_config)
+  local buf = vim.api.nvim_get_current_buf()
+  local was_modified = vim.api.nvim_buf_get_option(buf, 'modified')
+
   apply_config(user_config)
 
   if not state.ns then
@@ -149,6 +155,10 @@ function M.setup(user_config)
     end,
   })
   set_mappings()
+
+  if vim.api.nvim_buf_is_valid(buf) then
+    pcall(vim.api.nvim_buf_set_option, buf, 'modified', was_modified)
+  end
 end
 
 function M.get_state()
