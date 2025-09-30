@@ -1074,6 +1074,7 @@ function M.handle_tab()
     return
   end
   local indent = indent_string()
+  pcall(vim.cmd, 'undojoin')
   for _, entry in ipairs(entries) do
     for idx, line_text in ipairs(entry.text) do
       entry.text[idx] = indent .. line_text
@@ -1106,6 +1107,7 @@ function M.handle_shift_tab()
     return
   end
   local indent = indent_string()
+  pcall(vim.cmd, 'undojoin')
   for _, entry in ipairs(entries) do
     for idx, line_text in ipairs(entry.text) do
       local updated = line_text
