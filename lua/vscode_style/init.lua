@@ -15,8 +15,6 @@ local state = {
   backspace_mapped = false,
   applied_keymaps = {},
   keymap_restore = {},
-  dynamic_backspace_keys = {},
-  backspace_key_listener = nil,
 }
 
 local function notify(level, msg)
@@ -52,16 +50,11 @@ local function clear_keymaps()
       local restore = state.keymap_restore and state.keymap_restore[lhs]
       if restore then
         pcall(vim.fn.mapset, 'i', false, restore)
+        state.keymap_restore[lhs] = nil
       end
     end
   end
   state.applied_keymaps = {}
-  if state.dynamic_backspace_keys then
-    for lhs in pairs(state.dynamic_backspace_keys) do
-      pcall(vim.keymap.del, 'i', lhs)
-    end
-    state.dynamic_backspace_keys = {}
-  end
 end
 
 local function record_applied_keymap(lhs, opts)
