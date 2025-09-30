@@ -2,6 +2,10 @@ local M = {}
 
 local state
 
+local function current_buf()
+  return vim.api.nvim_get_current_buf()
+end
+
 local function clamp(value, low, high)
   if value < low then
     return low
@@ -192,18 +196,19 @@ end
 function M.setup(plugin_state)
   state = plugin_state
   ensure_namespace()
-  ensure_primary()
+  state.current_buf = nil
+  M.switch_buffer()
 end
 
 function M.iter()
   ensure_namespace()
-  ensure_primary()
+  M.switch_buffer()
   return state.cursors
 end
 
 function M.primary()
   ensure_namespace()
-  ensure_primary()
+  M.switch_buffer()
   for _, cursor in ipairs(state.cursors) do
     if cursor.is_primary then
       return cursor
@@ -214,6 +219,7 @@ end
 
 function M.sync_cursors()
   ensure_namespace()
+  M.switch_buffer()
   local win_pos = vim.api.nvim_win_get_cursor(0)
   ensure_primary()
   local win_line = math.max(win_pos[1], 1) - 1
@@ -240,6 +246,7 @@ end
 
 function M.update_position(cursor, line, col)
   ensure_namespace()
+  M.switch_buffer()
   local buf_handle = buf()
   local total_lines = vim.api.nvim_buf_line_count(buf_handle)
   if total_lines == 0 then
@@ -317,6 +324,7 @@ end
 
 function M.add_cursor_at(line, col)
   ensure_namespace()
+  M.switch_buffer()
   ensure_primary()
   if #state.cursors >= (state.config.max_cursors or 32) then
     return nil, 'Reached maximum cursor count'
@@ -329,6 +337,7 @@ end
 
 function M.remove_cursor(cursor)
   ensure_namespace()
+  M.switch_buffer()
   for idx, cur in ipairs(state.cursors) do
     if cur == cursor then
       delete_highlight(cur)
@@ -342,6 +351,7 @@ end
 
 function M.ensure_primary_cursor_at(line, col)
   ensure_namespace()
+  M.switch_buffer()
   line, col = sanitize_position({ line = line, col = col })
   local primary = M.primary()
   if not primary then
@@ -355,6 +365,7 @@ end
 
 function M.for_each(fn)
   ensure_namespace()
+  M.switch_buffer()
   ensure_primary()
   for idx, cursor in ipairs(state.cursors) do
     fn(cursor, idx)
@@ -363,6 +374,7 @@ end
 
 function M.get_positions()
   ensure_namespace()
+  M.switch_buffer()
   ensure_primary()
   local positions = {}
   for _, cursor in ipairs(state.cursors) do
@@ -372,6 +384,12 @@ function M.get_positions()
 end
 
 function M.replace_all_cursors(cursor_defs)
+  ensure_namespace()
+  M.switch_buffer()
+  local current = state.current_buf
+  if current then
+    pcall(vim.api.nvim_buf_clear_namespace, current, state.ns, 0, -1)
+  end
   for _, cursor in ipairs(state.cursors) do
     delete_highlight(cursor)
     pcall(vim.api.nvim_buf_del_extmark, buf(), state.ns, cursor.id)
@@ -400,8 +418,23 @@ function M.replace_all_cursors(cursor_defs)
   ensure_primary()
 end
 
+function M.switch_buffer()
+  ensure_namespace()
+  local bufnr = current_buf()
+  if state.current_buf == bufnr then
+    return
+  end
+  if state.current_buf and vim.api.nvim_buf_is_valid(state.current_buf) then
+    pcall(vim.api.nvim_buf_clear_namespace, state.current_buf, state.ns, 0, -1)
+  end
+  state.current_buf = bufnr
+  state.cursors = {}
+  ensure_primary()
+end
+
 function M.add_cursor_relative(cursor, delta_line)
   ensure_namespace()
+  M.switch_buffer()
   ensure_primary()
   local buf_handle = buf()
   local target_line = cursor.line + delta_line
@@ -437,6 +470,7 @@ end
 
 function M.with_cursor_position(cursor, fn)
   ensure_namespace()
+  M.switch_buffer()
   local current = vim.api.nvim_win_get_cursor(0)
   vim.api.nvim_win_set_cursor(0, { cursor.line + 1, cursor.col })
   local ok, res = pcall(fn)
@@ -446,6 +480,7 @@ end
 
 function M.update_highlights()
   ensure_namespace()
+  M.switch_buffer()
   for _, cursor in ipairs(state.cursors) do
     apply_highlight(cursor)
   end
