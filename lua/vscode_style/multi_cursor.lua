@@ -2,6 +2,24 @@ local M = {}
 
 local state
 
+local log_levels = vim.log.levels
+
+local function notify(level, msg)
+  local fn
+  if state and state.config then
+    if state.config.notify == false then
+      return
+    elseif state.config.notify ~= nil then
+      fn = state.config.notify
+    end
+  end
+  fn = fn or vim.notify
+  if not fn then
+    return
+  end
+  pcall(fn, msg, level or log_levels.INFO)
+end
+
 local function current_buf()
   return vim.api.nvim_get_current_buf()
 end
@@ -184,10 +202,16 @@ local function apply_highlight(cursor)
   local anchor, active = cursor.selection.anchor, cursor.selection.active
   local start_pos, end_pos = normalized_range(anchor, active)
 
+  local hl = state.config and state.config.selection_hl
+  if hl == false then
+    return
+  end
+  hl = hl or 'Visual'
+
   cursor.highlight_id = vim.api.nvim_buf_set_extmark(buf(), state.ns, start_pos.line, start_pos.col, {
     end_row = end_pos.line,
     end_col = end_pos.col,
-    hl_group = state.config.selection_hl or 'Visual',
+    hl_group = hl,
     right_gravity = false,
     end_right_gravity = false,
   })
@@ -415,7 +439,7 @@ function M.replace_all_cursors(cursor_defs)
     table.insert(state.cursors, cursor)
   end
   if truncated then
-    vim.notify('Reached maximum cursor count; extra cursors were ignored', vim.log.levels.WARN)
+    notify(log_levels.WARN, 'Reached maximum cursor count; extra cursors were ignored')
   end
   sort_cursors()
   ensure_primary()
