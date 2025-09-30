@@ -1,6 +1,3 @@
-local vscode_style = require('vscode_style')
-
--- Automatically initialize with default settings.
-vscode_style.setup()
-
-return vscode_style
+-- Expose the module without auto-setup to stay non‑opinionated.
+-- Consumers should call `require('vscode_style').setup({...})` explicitly.
+return require('vscode_style')
