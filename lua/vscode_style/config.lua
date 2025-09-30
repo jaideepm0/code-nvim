@@ -103,22 +103,6 @@ local keymap_definitions = {
     handler = { fn = 'handle_shift_tab' },
   },
   {
-    name = 'backspace_bs',
-    group = 'backspace',
-    lhs = '<BS>',
-    description = 'Backspace VS Code style',
-    handler = { fn = 'backspace_expr' },
-    opts = { expr = true },
-  },
-  {
-    name = 'backspace_ctrl_h',
-    group = 'backspace',
-    lhs = '<C-h>',
-    description = 'Backspace VS Code style (Ctrl+h)',
-    handler = { fn = 'backspace_expr' },
-    opts = { expr = true },
-  },
-  {
     name = 'move_line_up',
     group = 'line_ops',
     lhs = '<M-Up>',

@@ -7,6 +7,14 @@ local log_levels = vim.log.levels
 
 local backspace_cache
 
+local function backspace_enabled()
+  if not (state and state.config) then
+    return true
+  end
+  local flags = state.config.feature_flags or {}
+  return flags.backspace ~= false
+end
+
 local function canonicalize_backspace(name)
   if type(name) ~= 'string' or name == '' then
     return nil
@@ -1123,25 +1131,21 @@ end
 function M.on_insert_pre()
   local char = vim.v.char
   local key = vim.v.key
-  if not state.backspace_mapped and is_backspace_key(key) then
+  if backspace_enabled() and is_backspace_key(key) then
     multi_cursor.sync_cursors()
     local snapshot = gather_selections()
-    if #snapshot == 0 then
+    if #snapshot > 0 then
+      vim.v.char = ''
+      local ok, err = pcall(function()
+        pcall(vim.cmd, 'undojoin')
+        process_backspace(snapshot)
+      end)
+      if not ok then
+        notify(log_levels.ERROR, 'vscode_style backspace failed: ' .. err)
+      end
       return
     end
-    local target_buf = vim.api.nvim_get_current_buf()
-    vim.v.char = ''
-    if vim.api.nvim_buf_is_valid(target_buf) then
-      vim.schedule(function()
-        if vim.api.nvim_buf_is_valid(target_buf) then
-          vim.api.nvim_buf_call(target_buf, function()
-            pcall(vim.cmd, 'undojoin')
-            process_backspace(snapshot)
-          end)
-        end
-      end)
-    end
-    return
+    return -- allow native backspace when nothing is selected
   end
   if key == 'Tab' or key == 'S-Tab' then
     return
