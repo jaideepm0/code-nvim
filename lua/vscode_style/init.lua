@@ -30,6 +30,13 @@ local function set_mappings()
     vim.keymap.set('i', lhs, rhs, opts)
   end
 
+  local map_if_unmapped = function(lhs, rhs, opts)
+    if vim.fn.maparg(lhs, 'i') ~= '' then
+      return
+    end
+    map(lhs, rhs, opts)
+  end
+
   -- Core selection and cursor movement
   map('<S-Left>', function()
     actions.select_character('left')
@@ -67,10 +74,10 @@ local function set_mappings()
   map('<S-Tab>', function()
     actions.handle_shift_tab()
   end)
-  map('<BS>', function()
+  map_if_unmapped('<BS>', function()
     return actions.backspace_expr()
   end, { expr = true })
-  map('<C-h>', function()
+  map_if_unmapped('<C-h>', function()
     return actions.backspace_expr()
   end, { expr = true })
 

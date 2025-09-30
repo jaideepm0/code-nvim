@@ -915,9 +915,9 @@ local function remove_indent_prefix(text, indent)
   return text:sub(idx + 1), idx
 end
 
-local function process_backspace()
+local function process_backspace(snapshot)
   multi_cursor.sync_cursors()
-  local selections = gather_selections()
+  local selections = snapshot or gather_selections()
   if #selections == 0 then
     return false
   end
@@ -936,20 +936,22 @@ end
 
 function M.backspace_expr()
   multi_cursor.sync_cursors()
-  local selections = gather_selections()
-  if #selections == 0 then
-    local term = vim.api.nvim_replace_termcodes('<BS>', true, false, true)
-    vim.schedule(function()
-      vim.api.nvim_feedkeys(term, 'n', true)
-    end)
-    return ''
+  local snapshot = gather_selections()
+  if #snapshot == 0 then
+    return vim.api.nvim_replace_termcodes('<BS>', true, false, true)
   end
+  local target_buf = vim.api.nvim_get_current_buf()
   local generation = multi_cursor.current_generation and multi_cursor.current_generation() or nil
   vim.schedule(function()
     if generation and multi_cursor.current_generation and multi_cursor.current_generation() ~= generation then
       return
     end
-    process_backspace()
+    if not vim.api.nvim_buf_is_valid(target_buf) then
+      return
+    end
+    vim.api.nvim_buf_call(target_buf, function()
+      process_backspace(snapshot)
+    end)
   end)
   return ''
 end
@@ -1029,9 +1031,11 @@ function M.on_insert_pre()
   if not char or char == '' then
     return
   end
+  vim.v.char = ''
   multi_cursor.sync_cursors()
   local selections = gather_selections()
   if #selections == 0 then
+    vim.v.char = char
     return
   end
   local snapshot = {}
@@ -1042,7 +1046,6 @@ function M.on_insert_pre()
       finish = { line = sel.finish.line, col = sel.finish.col },
     }
   end
-  vim.v.char = ''
   local insert_char = char
   local target_buf = vim.api.nvim_get_current_buf()
   local generation = multi_cursor.current_generation and multi_cursor.current_generation() or nil
