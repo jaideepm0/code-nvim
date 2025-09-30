@@ -133,7 +133,7 @@ local keymap_definitions = {
   {
     name = 'delete_line',
     group = 'line_ops',
-    lhs = '<C-S-k>',
+    lhs = { '<C-S-k>', '<C-S-K>' },
     description = 'Delete current line',
     handler = { fn = 'delete_line' },
   },
