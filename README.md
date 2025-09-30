@@ -33,19 +33,15 @@ require("vscode_style").setup()
 Call `setup()` explicitly. This plugin is intentionally non‑opinionated and does not auto‑enable itself; you decide where and when to map keys and which features to enable.
 
 ## Configuration
-You can override basics and mapping behavior:
+`setup()` accepts a plain Lua table; you only need to specify the parts you want to change.
 
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `selection_hl` | `"Visual"` | Highlight used for simulated selections in insert mode. |
-| `max_cursors` | `32` | Upper bound on simultaneously tracked carets. |
-| `mappings.strategy` | `"respect"` | How to set keymaps: `"respect"` (only if unmapped), `"force"` (override), `"skip"` (no maps). |
-| `mappings.selection` | `true` | Enable Shift/Ctrl+Shift selection motions. |
-| `mappings.line_ops` | `true` | Enable Alt+Up/Down move and Shift+Alt+Up/Down copy, Ctrl+Shift+K delete line. |
-| `mappings.multi_cursor` | `true` | Enable Alt+Click, Ctrl+Alt+Up/Down, Ctrl+D, Ctrl+Shift+L, expand/shrink. |
-| `mappings.column_selection` | `true` | Enable Shift+Alt mouse drag/release for box selection. |
-| `mappings.tab` | `true` | Intercept Tab/Shift+Tab to indent/dedent active selections. |
-| `mappings.backspace` | `true` | Intercept Backspace to delete active selections. |
+- `selection_hl` (string\|false): Highlight used for simulated selections. Set `false` to disable highlights entirely.
+- `max_cursors` (number): Upper bound on simultaneously tracked cursors (default `32`).
+- `mapping_strategy` ("respect"\|"force"\|"skip"): Controls how default keymaps are applied.
+- `feature_flags` / `mappings`: Per-group toggles (`selection`, `line_ops`, `multi_cursor`, `column_selection`, `tab`, `backspace`). The older `mappings` table remains supported for compatibility.
+- `autocommands`: Toggle the internal automations (`insert_char_pre`, `insert_leave`, `insert_enter`, `buf_enter`, `buf_cleanup`).
+- `notify`: Provide your own notification function or `false` to silence all plugin messages.
+- `keymaps`: Override, duplicate, or disable specific shortcuts. Each entry accepts a string (new lhs), a list of lhs values, or a table with `lhs`, `opts`, `desc`, `enabled`, `action`, `args`, or even a custom `callback`.
 
 Example:
 
@@ -53,14 +49,21 @@ Example:
 require("vscode_style").setup({
   selection_hl = "Search",
   max_cursors = 16,
-  mappings = {
-    strategy = "respect", -- or "force"/"skip"
-    selection = true,
-    line_ops = true,
-    multi_cursor = true,
-    column_selection = true,
-    tab = true,
+  mapping_strategy = "respect", -- use "force" to override or "skip" to install nothing
+  feature_flags = {
+    tab = false, -- keep native Tab behaviour
     backspace = true,
+  },
+  autocommands = {
+    insert_enter = false, -- opt out of snapshot restore on InsertEnter
+  },
+  notify = false, -- run quietly
+  keymaps = {
+    move_line_up = { lhs = "<A-k>", desc = "Move line up like VS Code" },
+    backspace_ctrl_h = false, -- disable the Ctrl+h alias
+    add_selection_next = {
+      lhs = { "<C-d>", "<Leader>d" },
+    },
   },
 })
 ```
@@ -68,4 +71,5 @@ require("vscode_style").setup({
 ## Notes
 - Designed for Neovim 0.9 or newer; no external dependencies.
 - Behaves best with `set mouse=a` if you plan to use Shift+Alt drags for wider selections.
+- Default mappings are added only when free; use `mapping_strategy = "force"` to override (previous bindings are restored if you disable the plugin later).
 - Normal mode remains untouched—hit `<Esc>` whenever you want native motions back.

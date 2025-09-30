@@ -3,6 +3,64 @@ local M = {}
 local state
 local multi_cursor
 
+local log_levels = vim.log.levels
+
+local backspace_cache
+
+local function is_backspace_key(key)
+  if not key or key == '' then
+    return false
+  end
+  backspace_cache = backspace_cache or {
+    raw = {
+      vim.api.nvim_replace_termcodes('<BS>', true, true, true),
+      vim.api.nvim_replace_termcodes('<C-H>', true, true, true),
+      vim.api.nvim_replace_termcodes('<kBS>', true, true, true),
+      string.char(8),
+      string.char(127),
+    },
+    names = {
+      ['<BS>'] = true,
+      ['<C-H>'] = true,
+      ['<Backspace>'] = true,
+      ['<kBS>'] = true,
+    },
+  }
+  for _, raw in ipairs(backspace_cache.raw) do
+    if raw ~= '' and key == raw then
+      return true
+    end
+  end
+  local ok, name = pcall(vim.fn.keytrans, key)
+  if not ok then
+    return false
+  end
+  if backspace_cache.names[name] then
+    return true
+  end
+  if name == '^?' then -- some terminals map backspace to DEL
+    return true
+  end
+  return false
+end
+
+local function notify(level, msg)
+  local fn
+  if state and state.config then
+    if state.config.notify == false then
+      return
+    elseif state.config.notify ~= nil then
+      fn = state.config.notify
+    end
+  end
+  fn = fn or vim.notify
+  if not fn then
+    return
+  end
+  -- Protect against user-provided notification handlers throwing.
+  pcall(fn, msg, level or log_levels.INFO)
+end
+
 local function buf()
   return vim.api.nvim_get_current_buf()
 end
@@ -674,7 +732,7 @@ function M.alt_click_cursor()
   col = clamp(col, 0, #text)
   local _, err = multi_cursor.add_cursor_at(line, col)
   if err then
-    vim.notify(err, vim.log.levels.WARN)
+    notify(log_levels.WARN, err)
   end
 end
 
@@ -689,7 +747,7 @@ function M.add_cursor_vertical(direction)
   for _, cursor in ipairs(snapshot) do
     local new_cursor, err = multi_cursor.add_cursor_relative(cursor, delta)
     if not new_cursor and err then
-      vim.notify(err, vim.log.levels.WARN)
+      notify(log_levels.WARN, err)
       break
     elseif new_cursor then
       table.insert(new_cursors, new_cursor)
@@ -698,7 +756,7 @@ function M.add_cursor_vertical(direction)
   if #new_cursors == 0 and direction == 'up' then
     local primary = multi_cursor.primary()
     if primary and primary.line == 0 then
-      vim.notify('Cannot add cursor above the first line', vim.log.levels.INFO)
+      notify(log_levels.INFO, 'Cannot add cursor above the first line')
     end
   end
 end
@@ -706,6 +764,10 @@ end
 function M.add_selection_to_next_match()
   multi_cursor.sync_cursors()
   local primary = multi_cursor.primary()
+  if not primary then
+    notify(log_levels.WARN, 'No active cursor available for multi-selection')
+    return
+  end
   local needle
   if primary.selection then
     needle = get_selection_string(primary.selection)
@@ -727,13 +789,13 @@ function M.add_selection_to_next_match()
   end
   local next_start, next_end = find_next_occurrence(needle, start_line, start_col)
   if not next_start then
-    vim.notify('No further matches for "' .. needle .. '"', vim.log.levels.INFO)
+    notify(log_levels.INFO, 'No further matches for "' .. needle .. '"')
     return
   end
   local cursor, err = multi_cursor.add_cursor_at(next_start.line, next_end.col)
   if not cursor then
     if err then
-      vim.notify(err, vim.log.levels.WARN)
+      notify(log_levels.WARN, err)
     end
     return
   end
@@ -749,6 +811,10 @@ end
 function M.select_all_occurrences()
   multi_cursor.sync_cursors()
   local primary = multi_cursor.primary()
+  if not primary then
+    notify(log_levels.WARN, 'No active cursor available for multi-selection')
+    return
+  end
   local needle
   if primary.selection then
     needle = get_selection_string(primary.selection)
@@ -1025,30 +1091,27 @@ end
 function M.on_insert_pre()
   local char = vim.v.char
   local key = vim.v.key
-  if not state.backspace_mapped then
-    local keyname = vim.fn.keytrans(key or '')
-    if keyname == '<BS>' or keyname == '<C-H>' then
-      multi_cursor.sync_cursors()
-      local snapshot = gather_selections()
-      if #snapshot == 0 then
-        return
-      end
-      local target_buf = vim.api.nvim_get_current_buf()
-      local generation = multi_cursor.current_generation and multi_cursor.current_generation() or nil
-      vim.v.char = ''
-      vim.schedule(function()
-        if generation and multi_cursor.current_generation and multi_cursor.current_generation() ~= generation then
-          return
-        end
-        if not vim.api.nvim_buf_is_valid(target_buf) then
-          return
-        end
-        vim.api.nvim_buf_call(target_buf, function()
-          process_backspace(snapshot)
-        end)
-      end)
+  if not state.backspace_mapped and is_backspace_key(key) then
+    multi_cursor.sync_cursors()
+    local snapshot = gather_selections()
+    if #snapshot == 0 then
       return
     end
+    local target_buf = vim.api.nvim_get_current_buf()
+    local generation = multi_cursor.current_generation and multi_cursor.current_generation() or nil
+    vim.v.char = ''
+    vim.schedule(function()
+      if generation and multi_cursor.current_generation and multi_cursor.current_generation() ~= generation then
+        return
+      end
+      if not vim.api.nvim_buf_is_valid(target_buf) then
+        return
+      end
+      vim.api.nvim_buf_call(target_buf, function()
+        process_backspace(snapshot)
+      end)
+    end)
+    return
   end
   if key == 'Tab' or key == 'S-Tab' then
     return
