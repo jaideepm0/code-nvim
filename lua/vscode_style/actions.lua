@@ -435,6 +435,79 @@ local function selection_entries_with_text(selections)
   return entries
 end
 
+local function lines_from_selections(selections)
+  local uniq = {}
+  local lines = {}
+  for _, sel in ipairs(selections) do
+    local start_line = sel.start.line
+    local finish_line = sel.finish.line
+    local start_col = sel.start.col
+    local finish_col = sel.finish.col
+    if start_line == finish_line and start_col == finish_col then
+      goto continue
+    end
+    if finish_line > start_line and finish_col == 0 then
+      finish_line = finish_line - 1
+    end
+    for line = start_line, finish_line do
+      if not uniq[line] then
+        uniq[line] = true
+        table.insert(lines, line)
+      end
+    end
+    ::continue::
+  end
+  table.sort(lines)
+  return lines
+end
+
+local function apply_line_deltas(deltas)
+  if not deltas or next(deltas) == nil then
+    multi_cursor.update_highlights()
+    return
+  end
+  multi_cursor.for_each(function(cursor)
+    local delta = deltas[cursor.line]
+    if delta and delta ~= 0 then
+      local new_col = cursor.col + delta
+      if new_col < 0 then
+        new_col = 0
+      end
+      multi_cursor.update_position(cursor, cursor.line, new_col)
+    end
+    if cursor.anchor then
+      local anchor_delta = deltas[cursor.anchor.line]
+      if anchor_delta and anchor_delta ~= 0 then
+        local new_col = cursor.anchor.col + anchor_delta
+        if new_col < 0 then
+          new_col = 0
+        end
+        cursor.anchor = { line = cursor.anchor.line, col = new_col }
+      end
+    end
+    if cursor.selection then
+      local anchor_delta = deltas[cursor.selection.anchor.line] or 0
+      local active_delta = deltas[cursor.selection.active.line] or 0
+      if anchor_delta ~= 0 or active_delta ~= 0 then
+        local anchor_col = cursor.selection.anchor.col + anchor_delta
+        if anchor_col < 0 then
+          anchor_col = 0
+        end
+        local active_col = cursor.selection.active.col + active_delta
+        if active_col < 0 then
+          active_col = 0
+        end
+        local anchor = { line = cursor.selection.anchor.line, col = anchor_col }
+        local active = { line = cursor.selection.active.line, col = active_col }
+        multi_cursor.set_selection(cursor, anchor, active)
+      else
+        multi_cursor.set_selection(cursor, cursor.selection.anchor, cursor.selection.active, { keep_anchor = true })
+      end
+    end
+  end)
+  multi_cursor.update_highlights()
+end
+
 local function apply_selection_entries(entries)
   table.sort(entries, function(a, b)
     local sa = a.selection.start
@@ -1069,29 +1142,22 @@ function M.handle_tab()
     feedkeys('<Tab>')
     return
   end
-  local entries = selection_entries_with_text(selections)
-  if #entries == 0 then
+  local lines = lines_from_selections(selections)
+  if #lines == 0 then
+    feedkeys('<Tab>')
     return
   end
   local indent = indent_string()
-  for _, entry in ipairs(entries) do
-    for idx, line_text in ipairs(entry.text) do
-      entry.text[idx] = indent .. line_text
-    end
+  local indent_len = #indent
+  local deltas = {}
+  local bufnr = buf()
+  pcall(vim.cmd, 'undojoin')
+  for _, line in ipairs(lines) do
+    local text = get_line(line)
+    vim.api.nvim_buf_set_lines(bufnr, line, line + 1, false, { indent .. text })
+    deltas[line] = (deltas[line] or 0) + indent_len
   end
-  apply_selection_entries(entries)
-  for _, entry in ipairs(entries) do
-    local sel = entry.selection
-    local cursor = sel.cursor
-    local start_line = sel.start.line
-    local start_col = sel.start.col
-    local end_line, end_col = selection_active_from_text(start_line, start_col, entry.text)
-    local anchor = { line = start_line, col = start_col }
-    local active = { line = end_line, col = end_col }
-    multi_cursor.update_position(cursor, active.line, active.col)
-    multi_cursor.set_selection(cursor, anchor, active)
-  end
-  multi_cursor.update_highlights()
+  apply_line_deltas(deltas)
 end
 
 function M.handle_shift_tab()
@@ -1101,31 +1167,29 @@ function M.handle_shift_tab()
     feedkeys('<S-Tab>')
     return
   end
-  local entries = selection_entries_with_text(selections)
-  if #entries == 0 then
+  local lines = lines_from_selections(selections)
+  if #lines == 0 then
+    feedkeys('<S-Tab>')
     return
   end
   local indent = indent_string()
-  for _, entry in ipairs(entries) do
-    for idx, line_text in ipairs(entry.text) do
-      local updated = line_text
-      updated = remove_indent_prefix(updated, indent)
-      entry.text[idx] = updated
+  local bufnr = buf()
+  local deltas = {}
+  local changed = false
+  pcall(vim.cmd, 'undojoin')
+  for _, line in ipairs(lines) do
+    local text = get_line(line)
+    local updated, removed = remove_indent_prefix(text, indent)
+    if removed > 0 then
+      vim.api.nvim_buf_set_lines(bufnr, line, line + 1, false, { updated })
+      deltas[line] = (deltas[line] or 0) - removed
+      changed = true
     end
   end
-  apply_selection_entries(entries)
-  for _, entry in ipairs(entries) do
-    local sel = entry.selection
-    local cursor = sel.cursor
-    local start_line = sel.start.line
-    local start_col = sel.start.col
-    local end_line, end_col = selection_active_from_text(start_line, start_col, entry.text)
-    local anchor = { line = start_line, col = start_col }
-    local active = { line = end_line, col = end_col }
-    multi_cursor.update_position(cursor, active.line, active.col)
-    multi_cursor.set_selection(cursor, anchor, active)
+  if not changed then
+    return
   end
-  multi_cursor.update_highlights()
+  apply_line_deltas(deltas)
 end
 
 function M.on_insert_pre()
