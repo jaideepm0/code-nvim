@@ -1069,30 +1069,24 @@ function M.handle_tab()
     feedkeys('<Tab>')
     return
   end
-  local entries = selection_entries_with_text(selections)
-  if #entries == 0 then
+  local lines = collect_selection_lines(selections)
+  if #lines == 0 then
     return
   end
   local indent = indent_string()
+  local indent_len = #indent
+  if indent_len == 0 then
+    return
+  end
+  local bufnr = buf()
+  local deltas = {}
   pcall(vim.cmd, 'undojoin')
-  for _, entry in ipairs(entries) do
-    for idx, line_text in ipairs(entry.text) do
-      entry.text[idx] = indent .. line_text
-    end
+  for _, line in ipairs(lines) do
+    local text = get_line(line)
+    vim.api.nvim_buf_set_lines(bufnr, line, line + 1, false, { indent .. text })
+    deltas[line] = (deltas[line] or 0) + indent_len
   end
-  apply_selection_entries(entries)
-  for _, entry in ipairs(entries) do
-    local sel = entry.selection
-    local cursor = sel.cursor
-    local start_line = sel.start.line
-    local start_col = sel.start.col
-    local end_line, end_col = selection_active_from_text(start_line, start_col, entry.text)
-    local anchor = { line = start_line, col = start_col }
-    local active = { line = end_line, col = end_col }
-    multi_cursor.update_position(cursor, active.line, active.col)
-    multi_cursor.set_selection(cursor, anchor, active)
-  end
-  multi_cursor.update_highlights()
+  adjust_cursor_columns(deltas)
 end
 
 function M.handle_shift_tab()
@@ -1102,32 +1096,28 @@ function M.handle_shift_tab()
     feedkeys('<S-Tab>')
     return
   end
-  local entries = selection_entries_with_text(selections)
-  if #entries == 0 then
+  local lines = collect_selection_lines(selections)
+  if #lines == 0 then
     return
   end
   local indent = indent_string()
+  local bufnr = buf()
+  local deltas = {}
+  local changed = false
   pcall(vim.cmd, 'undojoin')
-  for _, entry in ipairs(entries) do
-    for idx, line_text in ipairs(entry.text) do
-      local updated = line_text
-      updated = remove_indent_prefix(updated, indent)
-      entry.text[idx] = updated
+  for _, line in ipairs(lines) do
+    local text = get_line(line)
+    local updated, removed = remove_indent_prefix(text, indent)
+    if removed > 0 then
+      vim.api.nvim_buf_set_lines(bufnr, line, line + 1, false, { updated })
+      deltas[line] = (deltas[line] or 0) - removed
+      changed = true
     end
   end
-  apply_selection_entries(entries)
-  for _, entry in ipairs(entries) do
-    local sel = entry.selection
-    local cursor = sel.cursor
-    local start_line = sel.start.line
-    local start_col = sel.start.col
-    local end_line, end_col = selection_active_from_text(start_line, start_col, entry.text)
-    local anchor = { line = start_line, col = start_col }
-    local active = { line = end_line, col = end_col }
-    multi_cursor.update_position(cursor, active.line, active.col)
-    multi_cursor.set_selection(cursor, anchor, active)
+  if not changed then
+    return
   end
-  multi_cursor.update_highlights()
+  adjust_cursor_columns(deltas)
 end
 
 function M.on_insert_pre()
