@@ -870,6 +870,13 @@ local function sort_points_desc(points)
   end)
 end
 
+local function char_to_text_lines(char)
+  if char == '\r' or char == '\n' then
+    return { '', '' }
+  end
+  return { char }
+end
+
 local function indent_string()
   local sw = vim.bo.shiftwidth
   if sw == 0 then
@@ -908,17 +915,29 @@ local function remove_indent_prefix(text, indent)
   return text:sub(idx + 1), idx
 end
 
-function M.handle_backspace()
+local function process_backspace()
   multi_cursor.sync_cursors()
   local selections = gather_selections()
   if #selections == 0 then
-    feedkeys('<BS>')
-    return
+    return false
   end
   delete_selections(selections)
   multi_cursor.sync_cursors()
   collapse_deleted_selections(selections)
   multi_cursor.update_highlights()
+  return true
+end
+
+function M.handle_backspace()
+  if not process_backspace() then
+    feedkeys('<BS>')
+  end
+end
+
+local function handle_backspace_pre()
+  if process_backspace() then
+    vim.v.char = ''
+  end
 end
 
 function M.handle_tab()
@@ -987,15 +1006,24 @@ function M.handle_shift_tab()
   multi_cursor.update_highlights()
 end
 
-function M.on_insert_char_pre(char, key)
-  if not char or char == '' then
-    return
-  end
+function M.on_insert_pre()
+  local key = vim.v.key
+  local char = vim.v.char
   local mode = vim.api.nvim_get_mode().mode
   if mode:sub(1, 1) ~= 'i' then
     return
   end
-  if key == 'BS' or key == 'Tab' or key == 'S-Tab' then
+  local backspace_term = vim.api.nvim_replace_termcodes('<BS>', true, false, true)
+  local ctrl_h_term = vim.api.nvim_replace_termcodes('<C-h>', true, false, true)
+  if key == 'BS' or key == 'kb' or key == 'C-h' or key == 'CTRL-H'
+      or key == backspace_term or key == ctrl_h_term or char == '\b' then
+    handle_backspace_pre()
+    return
+  end
+  if not char or char == '' then
+    return
+  end
+  if key == 'Tab' or key == 'S-Tab' then
     return
   end
   multi_cursor.sync_cursors()
@@ -1033,12 +1061,7 @@ function M.on_insert_char_pre(char, key)
       multi_cursor.sync_cursors()
       collapse_deleted_selections(snapshot)
       multi_cursor.update_highlights()
-      local text_lines
-      if insert_char == '\r' or insert_char == '\n' then
-        text_lines = { '', '' }
-      else
-        text_lines = { insert_char }
-      end
+      local text_lines = char_to_text_lines(insert_char)
       local points = {}
       for _, cursor in ipairs(multi_cursor.iter()) do
         table.insert(points, { cursor = cursor, line = cursor.line, col = cursor.col })

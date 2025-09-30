@@ -61,12 +61,6 @@ local function set_mappings()
   map('<C-S-End>', function()
     actions.select_to_file_boundary('end')
   end)
-  map('<BS>', function()
-    actions.handle_backspace()
-  end)
-  map('<C-h>', function()
-    actions.handle_backspace()
-  end)
   map('<Tab>', function()
     actions.handle_tab()
   end)
@@ -144,7 +138,7 @@ function M.setup(user_config)
   vim.api.nvim_create_autocmd('InsertCharPre', {
     group = state.autocmd_group,
     callback = function()
-      actions.on_insert_char_pre(vim.v.char, vim.v.key)
+      actions.on_insert_pre()
     end,
   })
   vim.api.nvim_create_autocmd('InsertLeave', {
