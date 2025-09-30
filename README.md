@@ -33,17 +33,17 @@ require("vscode_style").setup()
 Call `setup()` explicitly. This plugin is intentionally non‑opinionated and does not auto‑enable itself; you decide where and when to map keys and which features to enable.
 
 ## Configuration
-`setup()` accepts a plain Lua table; you only need to specify the parts you want to change.
+`setup()` with no arguments keeps the built-in defaults and only maps shortcuts that are currently unmapped in insert mode. Drop in a table when you need tweaks:
 
-- `selection_hl` (string\|false): Highlight used for simulated selections. Set `false` to disable highlights entirely.
-- `max_cursors` (number): Upper bound on simultaneously tracked cursors (default `32`).
-- `mapping_strategy` ("respect"\|"force"\|"skip"): Controls how default keymaps are applied.
-- `feature_flags` / `mappings`: Per-group toggles (`selection`, `line_ops`, `multi_cursor`, `column_selection`, `tab`, `backspace`). The older `mappings` table remains supported for compatibility.
-- `autocommands`: Toggle the internal automations (`insert_char_pre`, `insert_leave`, `insert_enter`, `buf_enter`, `buf_cleanup`).
-- `notify`: Provide your own notification function or `false` to silence all plugin messages.
-- `keymaps`: Override, duplicate, or disable specific shortcuts. Each entry accepts a string (new lhs), a list of lhs values, or a table with `lhs`, `opts`, `desc`, `enabled`, `action`, `args`, or even a custom `callback`.
+- `selection_hl` (string\|false) – highlight group for simulated selections; set to `false` to turn highlights off.
+- `max_cursors` (number) – maximum simultaneous cursors (default `32`).
+- `mapping_strategy` (`"respect"`\|`"force"`\|`"skip"`) – whether to reuse your bindings, override them, or install nothing.
+- `feature_flags` / `mappings` – enable/disable whole shortcut groups (`selection`, `line_ops`, `multi_cursor`, `column_selection`, `tab`, `backspace`).
+- `autocommands` – opt in/out of helper autocmds (`insert_char_pre`, `insert_leave`, `insert_enter`, `buf_enter`, `buf_cleanup`).
+- `notify` – custom notification function or `false` to stay quiet.
+- `keymaps` – override individual shortcuts (change `lhs`, tweak `opts`/`desc`, disable with `false`, or supply your own `callback`).
 
-Example:
+Example customisation:
 
 ```lua
 require("vscode_style").setup({
