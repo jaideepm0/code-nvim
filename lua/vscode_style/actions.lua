@@ -7,38 +7,76 @@ local log_levels = vim.log.levels
 
 local backspace_cache
 
+local function canonicalize_backspace(name)
+  if type(name) ~= 'string' or name == '' then
+    return nil
+  end
+  -- Drop any terminal capability digits (e.g. <80>kb), symbols, and hyphens.
+  local cleaned = name:gsub('%d+', ''):gsub('[<>]', ''):gsub('%-', '')
+  cleaned = cleaned:lower()
+  if cleaned == '' then
+    return nil
+  end
+  return cleaned
+end
+
+local function ensure_backspace_cache()
+  if backspace_cache then
+    return backspace_cache
+  end
+  local raw = {
+    vim.api.nvim_replace_termcodes('<BS>', true, true, true),
+    vim.api.nvim_replace_termcodes('<C-H>', true, true, true),
+    vim.api.nvim_replace_termcodes('<kBS>', true, true, true),
+    vim.api.nvim_replace_termcodes('<C-BS>', true, true, true),
+    string.char(8),
+    string.char(127),
+  }
+  local names = {
+    ['<BS>'] = true,
+    ['<C-H>'] = true,
+    ['<Backspace>'] = true,
+    ['<kBS>'] = true,
+    ['<C-BS>'] = true,
+    ['<kb>'] = true,
+  }
+  local canonical = {
+    bs = true,
+    backspace = true,
+    ch = true,
+    cbs = true,
+    ctrlh = true,
+    kb = true,
+    kbs = true,
+    del = true,
+    delete = true,
+  }
+  backspace_cache = { raw = raw, names = names, canonical = canonical }
+  return backspace_cache
+end
+
 local function is_backspace_key(key)
   if not key or key == '' then
     return false
   end
-  backspace_cache = backspace_cache or {
-    raw = {
-      vim.api.nvim_replace_termcodes('<BS>', true, true, true),
-      vim.api.nvim_replace_termcodes('<C-H>', true, true, true),
-      vim.api.nvim_replace_termcodes('<kBS>', true, true, true),
-      string.char(8),
-      string.char(127),
-    },
-    names = {
-      ['<BS>'] = true,
-      ['<C-H>'] = true,
-      ['<Backspace>'] = true,
-      ['<kBS>'] = true,
-    },
-  }
-  for _, raw in ipairs(backspace_cache.raw) do
+  local cache = ensure_backspace_cache()
+  for _, raw in ipairs(cache.raw) do
     if raw ~= '' and key == raw then
       return true
     end
   end
   local ok, name = pcall(vim.fn.keytrans, key)
-  if not ok then
+  if not ok or not name then
     return false
   end
-  if backspace_cache.names[name] then
+  if cache.names[name] then
     return true
   end
-  if name == '^?' then -- some terminals map backspace to DEL
+  if name == '^?' then -- DEL is often produced by terminals for backspace
+    return true
+  end
+  local canonical = canonicalize_backspace(name)
+  if canonical and cache.canonical[canonical] then
     return true
   end
   return false
