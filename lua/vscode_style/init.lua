@@ -171,7 +171,6 @@ local function setup_autocommands()
     vim.api.nvim_create_autocmd('InsertLeave', {
       group = state.autocmd_group,
       callback = function()
-        multi_cursor.save_snapshot()
         multi_cursor.clear_all_selections()
         multi_cursor.update_highlights()
       end,
@@ -187,23 +186,7 @@ local function setup_autocommands()
     })
   end
 
-  if state.config.autocommands.insert_enter then
-    vim.api.nvim_create_autocmd('InsertEnter', {
-      group = state.autocmd_group,
-      callback = function()
-        multi_cursor.restore_snapshot()
-      end,
-    })
-  end
-
-  if state.config.autocommands.buf_cleanup then
-    vim.api.nvim_create_autocmd({ 'BufWipeout', 'BufDelete' }, {
-      group = state.autocmd_group,
-      callback = function(args)
-        multi_cursor.clear_snapshot(args.buf)
-      end,
-    })
-  end
+  -- insert_enter and buf_cleanup hooks are intentionally no-ops in this revision
 end
 
 function M.setup(user_config)

@@ -241,7 +241,6 @@ function M.setup(plugin_state)
   ensure_namespace()
   state.current_buf = nil
   state.generation = (state.generation or 0) + 1
-  state.snapshots = state.snapshots or {}
 end
 
 function M.iter()
@@ -482,50 +481,18 @@ function M.current_generation()
   return state and state.generation or 0
 end
 
-local function cursor_to_snapshot(cursor)
-  return {
-    line = cursor.line,
-    col = cursor.col,
-    is_primary = cursor.is_primary,
-  }
-end
-
+-- Snapshot helpers are intentionally no-ops in this revision.
 function M.snapshot()
   return {}
 end
 
 function M.save_snapshot()
-  -- Snapshotting disabled; leave no state behind.
 end
 
 function M.restore_snapshot()
-  -- No-op until multi-cursor support returns.
 end
 
 function M.clear_snapshot()
-  -- Nothing to clear when snapshotting is disabled.
-end
-
-function M.sync_primary_to_window()
-  ensure_namespace()
-  if state.current_buf ~= current_buf() then
-    M.switch_buffer()
-  end
-  local pos = vim.api.nvim_win_get_cursor(0)
-  local line = math.max(pos[1], 1) - 1
-  local col = math.max(pos[2], 0)
-  local cursor = state.cursors[1]
-  if cursor then
-    cursor.line = line
-    cursor.col = col
-    cursor.is_primary = true
-    cursor.id = vim.api.nvim_buf_set_extmark(buf(), state.ns, line, col, {
-      id = cursor.id,
-      right_gravity = false,
-    })
-  else
-    state.cursors[1] = create_cursor(line, col, { is_primary = true })
-  end
 end
 
 function M.add_cursor_relative(cursor, delta_line)
