@@ -1013,53 +1013,55 @@ function M.on_insert_char_pre(char, key)
   end
   vim.v.char = ''
   local insert_char = char
+  local target_buf = vim.api.nvim_get_current_buf()
   vim.schedule(function()
-    local buffer = buf()
-    if not vim.api.nvim_buf_is_valid(buffer) then
+    if not vim.api.nvim_buf_is_valid(target_buf) then
       return
     end
-    if vim.api.nvim_get_mode().mode:sub(1, 1) ~= 'i' then
-      return
-    end
-    if #snapshot == 0 then
-      return
-    end
-    delete_selections(snapshot)
-    multi_cursor.sync_cursors()
-    collapse_deleted_selections(snapshot)
-    multi_cursor.update_highlights()
-    local text_lines
-    if insert_char == '\r' or insert_char == '\n' then
-      text_lines = { '', '' }
-    else
-      text_lines = { insert_char }
-    end
-    local points = {}
-    for _, cursor in ipairs(multi_cursor.iter()) do
-      table.insert(points, { cursor = cursor, line = cursor.line, col = cursor.col })
-    end
-    if #points == 0 then
-      return
-    end
-    sort_points_desc(points)
-    for _, point in ipairs(points) do
-      vim.api.nvim_buf_set_text(buffer, point.line, point.col, point.line, point.col, text_lines)
-    end
-    local line_delta = #text_lines - 1
-    local tail_len = #text_lines[#text_lines]
-    local head_len = #text_lines[1]
-    for _, point in ipairs(points) do
-      local cursor = point.cursor
-      local new_line = point.line + line_delta
-      local new_col
-      if line_delta == 0 then
-        new_col = point.col + head_len
-      else
-        new_col = tail_len
+    vim.api.nvim_buf_call(target_buf, function()
+      if vim.api.nvim_get_mode().mode:sub(1, 1) ~= 'i' then
+        return
       end
-      multi_cursor.update_position(cursor, new_line, new_col)
-    end
-    multi_cursor.update_highlights()
+      if #snapshot == 0 then
+        return
+      end
+      delete_selections(snapshot)
+      multi_cursor.sync_cursors()
+      collapse_deleted_selections(snapshot)
+      multi_cursor.update_highlights()
+      local text_lines
+      if insert_char == '\r' or insert_char == '\n' then
+        text_lines = { '', '' }
+      else
+        text_lines = { insert_char }
+      end
+      local points = {}
+      for _, cursor in ipairs(multi_cursor.iter()) do
+        table.insert(points, { cursor = cursor, line = cursor.line, col = cursor.col })
+      end
+      if #points == 0 then
+        return
+      end
+      sort_points_desc(points)
+      for _, point in ipairs(points) do
+        vim.api.nvim_buf_set_text(target_buf, point.line, point.col, point.line, point.col, text_lines)
+      end
+      local line_delta = #text_lines - 1
+      local tail_len = #text_lines[#text_lines]
+      local head_len = #text_lines[1]
+      for _, point in ipairs(points) do
+        local cursor = point.cursor
+        local new_line = point.line + line_delta
+        local new_col
+        if line_delta == 0 then
+          new_col = point.col + head_len
+        else
+          new_col = tail_len
+        end
+        multi_cursor.update_position(cursor, new_line, new_col)
+      end
+      multi_cursor.update_highlights()
+    end)
   end)
 end
 
