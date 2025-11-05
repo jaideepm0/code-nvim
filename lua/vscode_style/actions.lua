@@ -1183,32 +1183,19 @@ end
 function M.on_insert_pre()
   local char = vim.v.char
   local key = vim.v.key
-
   if key == 'Tab' or key == 'S-Tab' then
     return
   end
-
+  if not char or char == '' then
+    return
+  end
+  vim.v.char = ''
   multi_cursor.sync_cursors()
   local selections = gather_selections()
   if #selections == 0 then
-    return -- No selections, do nothing and allow native behavior.
+    vim.v.char = char
+    return
   end
-
-  -- A selection exists.
-  local is_backspace = backspace_enabled() and is_backspace_key(key)
-
-  if is_backspace then
-    -- Hijack backspace: trick the existing logic into replacing the
-    -- selection with an empty string.
-    vim.v.char = ''
-  elseif not char or char == '' then
-    return -- Not backspace and not a character, so do nothing.
-  end
-
-  -- At this point, we know a selection exists and a key was pressed that
-  -- should replace it (either a real character or our hijacked backspace).
-  local insert_char = vim.v.char
-  vim.v.char = '' -- Prevent default action of the key.
   local snapshot = {}
   for _, sel in ipairs(selections) do
     snapshot[#snapshot + 1] = {
@@ -1217,6 +1204,7 @@ function M.on_insert_pre()
       finish = { line = sel.finish.line, col = sel.finish.col },
     }
   end
+  local insert_char = char
   local target_buf = vim.api.nvim_get_current_buf()
   local generation = multi_cursor.current_generation and multi_cursor.current_generation() or nil
   vim.schedule(function()
@@ -1323,6 +1311,24 @@ function M.column_selection_drag_end()
   multi_cursor.update_highlights()
   state.column_selecting = false
   state.column_anchor = nil
+end
+
+function M.handle_key_with_selection(fallback_key)
+  multi_cursor.sync_cursors()
+  local selections = gather_selections()
+  if #selections == 0 then
+    -- No selection, feed the original key
+    local keys = vim.api.nvim_replace_termcodes(fallback_key, true, false, true)
+    vim.api.nvim_feedkeys(keys, 'n', false)
+    return
+  end
+
+  -- Selection exists, delete it and stay in insert mode
+  pcall(vim.cmd, 'undojoin')
+  delete_selections(selections)
+  multi_cursor.sync_cursors()
+  collapse_deleted_selections(selections)
+  multi_cursor.update_highlights()
 end
 
 return M

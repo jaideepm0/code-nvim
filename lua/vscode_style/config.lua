@@ -103,6 +103,20 @@ local keymap_definitions = {
     handler = { fn = 'handle_shift_tab' },
   },
   {
+    name = 'delete_selection_or_char_left',
+    group = 'backspace',
+    lhs = '<BS>',
+    description = 'Delete selection or character before cursor',
+    handler = { fn = 'handle_key_with_selection', args = { '<BS>' } },
+  },
+  {
+    name = 'delete_selection_or_char_right',
+    group = 'backspace',
+    lhs = '<Del>',
+    description = 'Delete selection or character after cursor',
+    handler = { fn = 'handle_key_with_selection', args = { '<Del>' } },
+  },
+  {
     name = 'move_line_up',
     group = 'line_ops',
     lhs = '<M-Up>',
