@@ -1188,13 +1188,15 @@ function M.on_insert_pre()
     local snapshot = gather_selections()
     if #snapshot > 0 then
       vim.v.char = ''
-      local ok, err = pcall(function()
-        pcall(vim.cmd, 'undojoin')
-        process_backspace(snapshot)
+      vim.schedule(function()
+        local ok, err = pcall(function()
+          pcall(vim.cmd, 'undojoin')
+          process_backspace(snapshot)
+        end)
+        if not ok then
+          notify(log_levels.ERROR, 'vscode_style backspace failed: ' .. err)
+        end
       end)
-      if not ok then
-        notify(log_levels.ERROR, 'vscode_style backspace failed: ' .. err)
-      end
       return
     end
     return -- allow native backspace when nothing is selected
