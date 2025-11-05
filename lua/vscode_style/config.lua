@@ -103,6 +103,14 @@ local keymap_definitions = {
     handler = { fn = 'handle_shift_tab' },
   },
   {
+    name = 'backspace_expr',
+    group = 'backspace',
+    lhs = '<BS>',
+    description = 'Delete selection (VS Code style)',
+    handler = { fn = 'backspace_expr' },
+    opts = { expr = true },
+  },
+  {
     name = 'move_line_up',
     group = 'line_ops',
     lhs = '<M-Up>',

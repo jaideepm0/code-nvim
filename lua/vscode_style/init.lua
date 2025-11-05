@@ -75,28 +75,36 @@ end
 
 local function make_action_callback(spec)
   if not spec then
-    return nil
+    return nil, nil
   end
   if type(spec.callback) == 'function' then
-    return spec.callback
+    return spec.callback, false
   end
   if not spec.handler or not spec.handler.fn then
-    return nil
+    return nil, false
   end
-  local fn = actions[spec.handler.fn]
+  local fn_name = spec.handler.fn
+  local fn = actions[fn_name]
   if type(fn) ~= 'function' then
-    notify(vim.log.levels.WARN, string.format('vscode_style: action %s is not defined', spec.handler.fn))
-    return nil
+    notify(vim.log.levels.WARN, string.format('vscode_style: action %s is not defined', fn_name))
+    return nil, false
   end
-  local args = spec.handler.args and vim.deepcopy(spec.handler.args) or nil
-  if not args or #args == 0 then
-    return function()
-      return fn()
+
+  local args = spec.handler.args and vim.deepcopy(spec.handler.args) or {}
+  local is_expr = spec.opts and spec.opts.expr
+
+  if is_expr then
+    local arg_strs = {}
+    for _, val in ipairs(args) do
+      table.insert(arg_strs, vim.fn.string(val))
     end
+    local expr_string = string.format("require('vscode_style.actions').%s(%s)", fn_name, table.concat(arg_strs, ', '))
+    return expr_string, true
   end
+
   return function()
     return fn(unpack(args))
-  end
+  end, false
 end
 
 local function apply_keymaps()
@@ -111,11 +119,14 @@ local function apply_keymaps()
   for _, name in ipairs(state.config.keymap_order) do
     local spec = state.config.keymaps[name]
     if spec and spec.enabled then
-      local callback = make_action_callback(spec)
+      local callback, is_expr = make_action_callback(spec)
       if callback then
         for _, lhs in ipairs(spec.lhs) do
           local opts = vim.tbl_extend('force', {}, spec.opts or {})
           opts.desc = opts.desc or spec.description
+          if is_expr then
+            opts.expr = true
+          end
           if opts.silent == nil then
             opts.silent = true
           end

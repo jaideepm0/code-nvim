@@ -1183,32 +1183,6 @@ end
 function M.on_insert_pre()
   local char = vim.v.char
   local key = vim.v.key
-
-  if backspace_enabled() and is_backspace_key(key) then
-    multi_cursor.sync_cursors()
-    local snapshot = gather_selections()
-    if #snapshot == 0 then
-      return -- allow native backspace when nothing is selected
-    end
-
-    vim.v.char = '' -- We have a selection, so prevent native backspace
-    local target_buf = vim.api.nvim_get_current_buf()
-    local generation = multi_cursor.current_generation and multi_cursor.current_generation() or nil
-    vim.schedule(function()
-      if not vim.api.nvim_buf_is_valid(target_buf) then
-        return
-      end
-      if generation and multi_cursor.current_generation and multi_cursor.current_generation() ~= generation then
-        return
-      end
-      vim.api.nvim_buf_call(target_buf, function()
-        pcall(vim.cmd, 'undojoin')
-        process_backspace(snapshot)
-      end)
-    end)
-    return
-  end
-
   if key == 'Tab' or key == 'S-Tab' then
     return
   end
@@ -1337,6 +1311,22 @@ function M.column_selection_drag_end()
   multi_cursor.update_highlights()
   state.column_selecting = false
   state.column_anchor = nil
+end
+
+function M.backspace_expr()
+  multi_cursor.sync_cursors()
+  local snapshot = gather_selections()
+  if #snapshot == 0 then
+    return vim.api.nvim_replace_termcodes('<BS>', true, false, true)
+  end
+  local target_buf = vim.api.nvim_get_current_buf()
+  if vim.api.nvim_buf_is_valid(target_buf) then
+    vim.api.nvim_buf_call(target_buf, function()
+      pcall(vim.cmd, 'undojoin')
+      process_backspace(snapshot)
+    end)
+  end
+  return ''
 end
 
 return M
