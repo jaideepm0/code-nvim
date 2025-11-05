@@ -1101,9 +1101,15 @@ local function process_backspace(snapshot)
 end
 
 function M.handle_backspace()
-  if not process_backspace() then
+  multi_cursor.sync_cursors()
+  local snapshot = gather_selections()
+  if #snapshot == 0 then
     feedkeys('<BS>')
+    return
   end
+
+  pcall(vim.cmd, 'undojoin')
+  process_backspace(snapshot)
 end
 
 function M.backspace_expr()
@@ -1183,23 +1189,19 @@ end
 function M.on_insert_pre()
   local char = vim.v.char
   local key = vim.v.key
-
   if key == 'Tab' or key == 'S-Tab' then
     return
   end
-
+  if not char or char == '' then
+    return
+  end
+  vim.v.char = ''
   multi_cursor.sync_cursors()
   local selections = gather_selections()
   if #selections == 0 then
-    return -- No selections, do nothing and allow native behavior.
+    vim.v.char = char
+    return
   end
-
-  -- A selection exists. Prevent the default action for this key press.
-  vim.v.char = ''
-
-  local is_backspace = backspace_enabled() and is_backspace_key(key)
-  local insert_char = is_backspace and '' or char
-
   local snapshot = {}
   for _, sel in ipairs(selections) do
     snapshot[#snapshot + 1] = {
@@ -1208,7 +1210,7 @@ function M.on_insert_pre()
       finish = { line = sel.finish.line, col = sel.finish.col },
     }
   end
-
+  local insert_char = char
   local target_buf = vim.api.nvim_get_current_buf()
   local generation = multi_cursor.current_generation and multi_cursor.current_generation() or nil
   vim.schedule(function()
@@ -1218,21 +1220,17 @@ function M.on_insert_pre()
     if generation and multi_cursor.current_generation and multi_cursor.current_generation() ~= generation then
       return
     end
-
     vim.api.nvim_buf_call(target_buf, function()
       if vim.api.nvim_get_mode().mode:sub(1, 1) ~= 'i' then
         return
       end
-      pcall(vim.cmd, 'undojoin')
+      if #snapshot == 0 then
+        return
+      end
       delete_selections(snapshot)
       multi_cursor.sync_cursors()
       collapse_deleted_selections(snapshot)
-
-      if insert_char == '' then
-        multi_cursor.update_highlights()
-        return
-      end
-
+      multi_cursor.update_highlights()
       local text_lines = char_to_text_lines(insert_char)
       local points = {}
       for _, cursor in ipairs(multi_cursor.iter()) do
@@ -1241,12 +1239,10 @@ function M.on_insert_pre()
       if #points == 0 then
         return
       end
-
       sort_points_desc(points)
       for _, point in ipairs(points) do
         vim.api.nvim_buf_set_text(target_buf, point.line, point.col, point.line, point.col, text_lines)
       end
-
       local line_delta = #text_lines - 1
       local tail_len = #text_lines[#text_lines]
       local head_len = #text_lines[1]
