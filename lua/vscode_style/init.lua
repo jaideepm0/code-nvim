@@ -111,13 +111,22 @@ local function apply_keymaps()
   for _, name in ipairs(state.config.keymap_order) do
     local spec = state.config.keymaps[name]
     if spec and spec.enabled then
-      local callback = make_action_callback(spec)
-      if callback then
+      local rhs
+      if spec.expr and spec.rhs then
+        rhs = spec.rhs
+      else
+        rhs = make_action_callback(spec)
+      end
+
+      if rhs then
         for _, lhs in ipairs(spec.lhs) do
           local opts = vim.tbl_extend('force', {}, spec.opts or {})
           opts.desc = opts.desc or spec.description
           if opts.silent == nil then
             opts.silent = true
+          end
+          if spec.expr then
+            opts.expr = true
           end
           local buffer = sanitize_buffer_option(opts.buffer)
           if buffer then
@@ -137,7 +146,7 @@ local function apply_keymaps()
             end
           end
 
-          local ok, err = pcall(vim.keymap.set, 'i', lhs, callback, opts)
+          local ok, err = pcall(vim.keymap.set, 'i', lhs, rhs, opts)
           if ok then
             local del_opts = opts.buffer and { buffer = opts.buffer } or nil
             record_applied_keymap(lhs, del_opts)
