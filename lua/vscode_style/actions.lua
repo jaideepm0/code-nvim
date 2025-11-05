@@ -1100,27 +1100,6 @@ local function process_backspace(snapshot)
   return true
 end
 
-function M.handle_backspace()
-  if not process_backspace() then
-    feedkeys('<BS>')
-  end
-end
-
-function M.backspace_expr()
-  multi_cursor.sync_cursors()
-  local snapshot = gather_selections()
-  if #snapshot == 0 then
-    return vim.api.nvim_replace_termcodes('<BS>', true, false, true)
-  end
-  local target_buf = vim.api.nvim_get_current_buf()
-  if vim.api.nvim_buf_is_valid(target_buf) then
-    vim.api.nvim_buf_call(target_buf, function()
-      pcall(vim.cmd, 'undojoin')
-      process_backspace(snapshot)
-    end)
-  end
-  return ''
-end
 
 function M.handle_tab()
   multi_cursor.sync_cursors()
@@ -1313,22 +1292,33 @@ function M.column_selection_drag_end()
   state.column_anchor = nil
 end
 
-function M.handle_key_with_selection(fallback_key)
+local function handle_key_expr(fallback_key)
   multi_cursor.sync_cursors()
   local selections = gather_selections()
   if #selections == 0 then
-    -- No selection, feed the original key
-    local keys = vim.api.nvim_replace_termcodes(fallback_key, true, false, true)
-    vim.api.nvim_feedkeys(keys, 'n', false)
-    return
+    return vim.api.nvim_replace_termcodes(fallback_key, true, false, true)
   end
 
-  -- Selection exists, delete it and stay in insert mode
-  pcall(vim.cmd, 'undojoin')
-  delete_selections(selections)
-  multi_cursor.sync_cursors()
-  collapse_deleted_selections(selections)
-  multi_cursor.update_highlights()
+  local target_buf = vim.api.nvim_get_current_buf()
+  if vim.api.nvim_buf_is_valid(target_buf) then
+    vim.api.nvim_buf_call(target_buf, function()
+      pcall(vim.cmd, 'undojoin')
+      delete_selections(selections)
+      multi_cursor.sync_cursors()
+      collapse_deleted_selections(selections)
+      multi_cursor.update_highlights()
+    end)
+  end
+
+  return ''
+end
+
+function M.backspace_expr()
+  return handle_key_expr('<BS>')
+end
+
+function M.delete_expr()
+  return handle_key_expr('<Del>')
 end
 
 return M
