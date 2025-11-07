@@ -1087,33 +1087,48 @@ local function remove_indent_prefix(text, indent)
   return text:sub(idx + 1), idx
 end
 
-local function handle_key_expr(fallback_key)
+local function process_backspace(snapshot)
+  multi_cursor.sync_cursors()
+  local selections = snapshot or gather_selections()
+  if #selections == 0 then
+    return false
+  end
+  delete_selections(selections)
+  multi_cursor.sync_cursors()
+  collapse_deleted_selections(selections)
+  multi_cursor.update_highlights()
+  return true
+end
+
+local function handle_key_expr_direct(fallback_key)
   multi_cursor.sync_cursors()
   local selections = gather_selections()
   if #selections == 0 then
     return vim.api.nvim_replace_termcodes(fallback_key, true, false, true)
   end
 
-  local target_buf = vim.api.nvim_get_current_buf()
-  if vim.api.nvim_buf_is_valid(target_buf) then
-    vim.api.nvim_buf_call(target_buf, function()
-      pcall(vim.cmd, 'undojoin')
-      delete_selections(selections)
-      multi_cursor.sync_cursors()
-      collapse_deleted_selections(selections)
-      multi_cursor.update_highlights()
-    end)
+  -- Perform the deletion directly and synchronously
+  local ok, err = pcall(function()
+    vim.cmd('undojoin')
+    delete_selections(selections)
+    multi_cursor.sync_cursors()
+    collapse_deleted_selections(selections)
+    multi_cursor.update_highlights()
+  end)
+
+  if not ok then
+    notify(log_levels.ERROR, 'vscode_style direct key handler failed: ' .. err)
   end
 
   return ''
 end
 
 function M.backspace_expr()
-  return handle_key_expr('<BS>')
+  return handle_key_expr_direct('<BS>')
 end
 
 function M.delete_expr()
-  return handle_key_expr('<Del>')
+  return handle_key_expr_direct('<Del>')
 end
 
 function M.handle_tab()
@@ -1177,15 +1192,28 @@ end
 function M.on_insert_pre()
   local char = vim.v.char
   local key = vim.v.key
-
+  if backspace_enabled() and is_backspace_key(key) then
+    multi_cursor.sync_cursors()
+    local snapshot = gather_selections()
+    if #snapshot > 0 then
+      vim.v.char = ''
+      local ok, err = pcall(function()
+        pcall(vim.cmd, 'undojoin')
+        process_backspace(snapshot)
+      end)
+      if not ok then
+        notify(log_levels.ERROR, 'vscode_style backspace failed: ' .. err)
+      end
+      return
+    end
+    return -- allow native backspace when nothing is selected
+  end
   if key == 'Tab' or key == 'S-Tab' then
     return
   end
-
   if not char or char == '' then
     return
   end
-
   vim.v.char = ''
   multi_cursor.sync_cursors()
   local selections = gather_selections()
@@ -1193,7 +1221,6 @@ function M.on_insert_pre()
     vim.v.char = char
     return
   end
-
   local snapshot = {}
   for _, sel in ipairs(selections) do
     snapshot[#snapshot + 1] = {
