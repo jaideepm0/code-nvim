@@ -111,22 +111,13 @@ local function apply_keymaps()
   for _, name in ipairs(state.config.keymap_order) do
     local spec = state.config.keymaps[name]
     if spec and spec.enabled then
-      local rhs
-      if spec.expr and spec.rhs then
-        rhs = spec.rhs
-      else
-        rhs = make_action_callback(spec)
-      end
-
-      if rhs then
+      local callback = make_action_callback(spec)
+      if callback then
         for _, lhs in ipairs(spec.lhs) do
           local opts = vim.tbl_extend('force', {}, spec.opts or {})
           opts.desc = opts.desc or spec.description
           if opts.silent == nil then
             opts.silent = true
-          end
-          if spec.expr then
-            opts.expr = true
           end
           local buffer = sanitize_buffer_option(opts.buffer)
           if buffer then
@@ -146,7 +137,7 @@ local function apply_keymaps()
             end
           end
 
-          local ok, err = pcall(vim.keymap.set, 'i', lhs, rhs, opts)
+          local ok, err = pcall(vim.keymap.set, 'i', lhs, callback, opts)
           if ok then
             local del_opts = opts.buffer and { buffer = opts.buffer } or nil
             record_applied_keymap(lhs, del_opts)
@@ -180,6 +171,7 @@ local function setup_autocommands()
     vim.api.nvim_create_autocmd('InsertLeave', {
       group = state.autocmd_group,
       callback = function()
+        M.deactivate_selection_keymaps()
         multi_cursor.clear_all_selections()
         multi_cursor.update_highlights()
       end,
@@ -191,6 +183,15 @@ local function setup_autocommands()
       group = state.autocmd_group,
       callback = function()
         multi_cursor.switch_buffer()
+      end,
+    })
+  end
+
+  if state.config.autocommands.cursor_moved_i then
+    vim.api.nvim_create_autocmd('CursorMovedI', {
+      group = state.autocmd_group,
+      callback = function()
+        actions.on_cursor_moved_i()
       end,
     })
   end
@@ -225,6 +226,31 @@ end
 
 function M.get_state()
   return state
+end
+
+local selection_keymaps_active = false
+
+function M.activate_selection_keymaps()
+  if selection_keymaps_active then
+    return
+  end
+  local opts = { buffer = true, silent = true }
+  vim.keymap.set('i', '<BS>', function()
+    require('vscode_style.actions').delete_selection_and_cleanup()
+  end, opts)
+  vim.keymap.set('i', '<Del>', function()
+    require('vscode_style.actions').delete_selection_and_cleanup()
+  end, opts)
+  selection_keymaps_active = true
+end
+
+function M.deactivate_selection_keymaps()
+  if not selection_keymaps_active then
+    return
+  end
+  pcall(vim.keymap.del, 'i', '<BS>', { buffer = true })
+  pcall(vim.keymap.del, 'i', '<Del>', { buffer = true })
+  selection_keymaps_active = false
 end
 
 return M
