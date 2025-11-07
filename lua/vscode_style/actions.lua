@@ -1087,19 +1087,34 @@ local function remove_indent_prefix(text, indent)
   return text:sub(idx + 1), idx
 end
 
-local function process_backspace(snapshot)
+local function handle_key_expr(fallback_key)
   multi_cursor.sync_cursors()
-  local selections = snapshot or gather_selections()
+  local selections = gather_selections()
   if #selections == 0 then
-    return false
+    return vim.api.nvim_replace_termcodes(fallback_key, true, false, true)
   end
-  delete_selections(selections)
-  multi_cursor.sync_cursors()
-  collapse_deleted_selections(selections)
-  multi_cursor.update_highlights()
-  return true
+
+  local target_buf = vim.api.nvim_get_current_buf()
+  if vim.api.nvim_buf_is_valid(target_buf) then
+    vim.api.nvim_buf_call(target_buf, function()
+      pcall(vim.cmd, 'undojoin')
+      delete_selections(selections)
+      multi_cursor.sync_cursors()
+      collapse_deleted_selections(selections)
+      multi_cursor.update_highlights()
+    end)
+  end
+
+  return ''
 end
 
+function M.backspace_expr()
+  return handle_key_expr('<BS>')
+end
+
+function M.delete_expr()
+  return handle_key_expr('<Del>')
+end
 
 function M.handle_tab()
   multi_cursor.sync_cursors()
@@ -1162,12 +1177,15 @@ end
 function M.on_insert_pre()
   local char = vim.v.char
   local key = vim.v.key
+
   if key == 'Tab' or key == 'S-Tab' then
     return
   end
+
   if not char or char == '' then
     return
   end
+
   vim.v.char = ''
   multi_cursor.sync_cursors()
   local selections = gather_selections()
@@ -1175,6 +1193,7 @@ function M.on_insert_pre()
     vim.v.char = char
     return
   end
+
   local snapshot = {}
   for _, sel in ipairs(selections) do
     snapshot[#snapshot + 1] = {
@@ -1290,35 +1309,6 @@ function M.column_selection_drag_end()
   multi_cursor.update_highlights()
   state.column_selecting = false
   state.column_anchor = nil
-end
-
-local function handle_key_expr(fallback_key)
-  multi_cursor.sync_cursors()
-  local selections = gather_selections()
-  if #selections == 0 then
-    return vim.api.nvim_replace_termcodes(fallback_key, true, false, true)
-  end
-
-  local target_buf = vim.api.nvim_get_current_buf()
-  if vim.api.nvim_buf_is_valid(target_buf) then
-    vim.api.nvim_buf_call(target_buf, function()
-      pcall(vim.cmd, 'undojoin')
-      delete_selections(selections)
-      multi_cursor.sync_cursors()
-      collapse_deleted_selections(selections)
-      multi_cursor.update_highlights()
-    end)
-  end
-
-  return ''
-end
-
-function M.backspace_expr()
-  return handle_key_expr('<BS>')
-end
-
-function M.delete_expr()
-  return handle_key_expr('<Del>')
 end
 
 return M
