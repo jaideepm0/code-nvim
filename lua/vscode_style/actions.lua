@@ -738,6 +738,7 @@ function M.select_character(direction)
     apply_selection(cursor, new_line, new_col)
   end)
   multi_cursor.update_highlights()
+  require('vscode_style').activate_selection_keymaps()
 end
 
 function M.select_line(direction)
@@ -747,6 +748,7 @@ function M.select_line(direction)
     apply_selection(cursor, new_line, new_col)
   end)
   multi_cursor.update_highlights()
+  require('vscode_style').activate_selection_keymaps()
 end
 
 function M.select_word(direction)
@@ -761,6 +763,7 @@ function M.select_word(direction)
     apply_selection(cursor, new_line, new_col)
   end)
   multi_cursor.update_highlights()
+  require('vscode_style').activate_selection_keymaps()
 end
 
 function M.select_to_line_boundary(boundary)
@@ -770,6 +773,7 @@ function M.select_to_line_boundary(boundary)
     apply_selection(cursor, new_line, new_col)
   end)
   multi_cursor.update_highlights()
+  require('vscode_style').activate_selection_keymaps()
 end
 
 function M.select_to_file_boundary(boundary)
@@ -779,6 +783,7 @@ function M.select_to_file_boundary(boundary)
     apply_selection(cursor, new_line, new_col)
   end)
   multi_cursor.update_highlights()
+  require('vscode_style').activate_selection_keymaps()
 end
 
 function M.move_line(direction)
@@ -912,6 +917,7 @@ function M.add_selection_to_next_match()
   }
   multi_cursor.update_position(cursor, next_end.line, next_end.col)
   multi_cursor.update_highlights()
+  require('vscode_style').activate_selection_keymaps()
 end
 
 function M.select_all_occurrences()
@@ -949,6 +955,7 @@ function M.select_all_occurrences()
   end
   multi_cursor.replace_all_cursors(cursor_defs)
   multi_cursor.update_highlights()
+  require('vscode_style').activate_selection_keymaps()
 end
 
 function M.expand_selection()
@@ -998,21 +1005,31 @@ function M.expand_selection()
     multi_cursor.update_position(cursor, cursor.selection.active.line, cursor.selection.active.col)
   end)
   multi_cursor.update_highlights()
+  require('vscode_style').activate_selection_keymaps()
 end
 
 function M.shrink_selection()
   multi_cursor.sync_cursors()
+  local has_selection = false
   multi_cursor.for_each(function(cursor)
     if cursor.selection then
       multi_cursor.pop_selection(cursor)
       if cursor.selection then
+        has_selection = true
         local _, end_pos = selection_bounds(cursor.selection)
         multi_cursor.update_position(cursor, end_pos.line, end_pos.col)
       end
     end
   end)
   multi_cursor.update_highlights()
+  if has_selection then
+    require('vscode_style').activate_selection_keymaps()
+  else
+    require('vscode_style').deactivate_selection_keymaps()
+  end
 end
+
+M.selection_bounds = selection_bounds
 
 local function delete_selections(selections)
   table.sort(selections, function(a, b)
@@ -1100,35 +1117,26 @@ local function process_backspace(snapshot)
   return true
 end
 
-local function handle_key_expr_direct(fallback_key)
-  multi_cursor.sync_cursors()
-  local selections = gather_selections()
-  if #selections == 0 then
-    return vim.api.nvim_replace_termcodes(fallback_key, true, false, true)
+function M.handle_backspace()
+  if not process_backspace() then
+    feedkeys('<BS>')
   end
-
-  -- Perform the deletion directly and synchronously
-  local ok, err = pcall(function()
-    vim.cmd('undojoin')
-    delete_selections(selections)
-    multi_cursor.sync_cursors()
-    collapse_deleted_selections(selections)
-    multi_cursor.update_highlights()
-  end)
-
-  if not ok then
-    notify(log_levels.ERROR, 'vscode_style direct key handler failed: ' .. err)
-  end
-
-  return ''
 end
 
 function M.backspace_expr()
-  return handle_key_expr_direct('<BS>')
-end
-
-function M.delete_expr()
-  return handle_key_expr_direct('<Del>')
+  multi_cursor.sync_cursors()
+  local snapshot = gather_selections()
+  if #snapshot == 0 then
+    return vim.api.nvim_replace_termcodes('<BS>', true, false, true)
+  end
+  local target_buf = vim.api.nvim_get_current_buf()
+  if vim.api.nvim_buf_is_valid(target_buf) then
+    vim.api.nvim_buf_call(target_buf, function()
+      pcall(vim.cmd, 'undojoin')
+      process_backspace(snapshot)
+    end)
+  end
+  return ''
 end
 
 function M.handle_tab()
@@ -1221,6 +1229,9 @@ function M.on_insert_pre()
     vim.v.char = char
     return
   end
+
+  require('vscode_style').deactivate_selection_keymaps()
+
   local snapshot = {}
   for _, sel in ipairs(selections) do
     snapshot[#snapshot + 1] = {
@@ -1336,6 +1347,55 @@ function M.column_selection_drag_end()
   multi_cursor.update_highlights()
   state.column_selecting = false
   state.column_anchor = nil
+end
+
+function M.delete_selection_and_cleanup()
+  multi_cursor.sync_cursors()
+  local selections = gather_selections()
+  if #selections == 0 then
+    -- This should not happen if keymaps are managed correctly, but as a fallback:
+    require('vscode_style').deactivate_selection_keymaps()
+    local keys = vim.api.nvim_replace_termcodes('<BS>', true, false, true)
+    vim.api.nvim_feedkeys(keys, 'n', false)
+    return
+  end
+
+  local ok, err = pcall(function()
+    vim.cmd('undojoin')
+    delete_selections(selections)
+    multi_cursor.sync_cursors()
+    collapse_deleted_selections(selections)
+    multi_cursor.update_highlights()
+  end)
+
+  if not ok then
+    notify(log_levels.ERROR, 'vscode_style delete_selection failed: ' .. err)
+  end
+
+  -- Crucially, clean up the keymaps *after* the deletion
+  require('vscode_style').deactivate_selection_keymaps()
+end
+
+function M.on_cursor_moved_i()
+  local primary = multi_cursor.primary()
+  if not (primary and primary.selection) then
+    return
+  end
+  local start_pos, end_pos = M.selection_bounds(primary.selection)
+  local cursor_pos = vim.api.nvim_win_get_cursor(0)
+  local cursor_line = cursor_pos[1] - 1
+  local cursor_col = cursor_pos[2]
+
+  if
+    cursor_line < start_pos.line
+    or cursor_line > end_pos.line
+    or (cursor_line == start_pos.line and cursor_col < start_pos.col)
+    or (cursor_line == end_pos.line and cursor_col > end_pos.col)
+  then
+    multi_cursor.clear_all_selections()
+    multi_cursor.update_highlights()
+    require('vscode_style').deactivate_selection_keymaps()
+  end
 end
 
 return M

@@ -15,6 +15,7 @@ local default_autocommands = {
   insert_enter = true,
   buf_enter = true,
   buf_cleanup = true,
+  cursor_moved_i = true,
 }
 
 local keymap_definitions = {
@@ -101,22 +102,6 @@ local keymap_definitions = {
     lhs = '<S-Tab>',
     description = 'Dedent selection (VS Code style)',
     handler = { fn = 'handle_shift_tab' },
-  },
-  {
-    name = 'delete_selection_or_char_left',
-    group = 'backspace',
-    lhs = '<BS>',
-    rhs = "require('vscode_style.actions').backspace_expr()",
-    expr = true,
-    description = 'Delete selection or character before cursor',
-  },
-  {
-    name = 'delete_selection_or_char_right',
-    group = 'backspace',
-    lhs = '<Del>',
-    rhs = "require('vscode_style.actions').delete_expr()",
-    expr = true,
-    description = 'Delete selection or character after cursor',
   },
   {
     name = 'move_line_up',
