@@ -1089,15 +1089,35 @@ local function apply_surround_to_selections(open_char, close_char, selections)
   if not selections or #selections == 0 then
     return {}
   end
-  local entries = {}
+  local entries, seen = {}, {}
   for _, sel in ipairs(selections) do
-    local text = vim.api.nvim_buf_get_text(buf(), sel.start.line, sel.start.col, sel.finish.line, sel.finish.col, {})
-    if #text == 0 then
-      text = { '' }
+    local start_line, start_col = sanitize_point(sel.start)
+    local finish_line, finish_col = sanitize_point(sel.finish)
+    if finish_line < start_line or (finish_line == start_line and finish_col < start_col) then
+      start_line, finish_line = finish_line, start_line
+      start_col, finish_col = finish_col, start_col
     end
-    text[1] = open_char .. (text[1] or '')
-    text[#text] = (text[#text] or '') .. close_char
-    entries[#entries + 1] = { selection = sel, text = text }
+    local key = string.format('%d:%d-%d:%d', start_line, start_col, finish_line, finish_col)
+    if not seen[key] then
+      seen[key] = true
+      local text = vim.api.nvim_buf_get_text(buf(), start_line, start_col, finish_line, finish_col, {})
+      if #text == 0 then
+        text = { '' }
+      end
+      text[1] = open_char .. (text[1] or '')
+      text[#text] = (text[#text] or '') .. close_char
+      entries[#entries + 1] = {
+        selection = {
+          cursor = sel.cursor,
+          start = { line = start_line, col = start_col },
+          finish = { line = finish_line, col = finish_col },
+        },
+        text = text,
+      }
+    end
+  end
+  if #entries == 0 then
+    return {}
   end
   table.sort(entries, function(a, b)
     local sa, sb = a.selection.start, b.selection.start
