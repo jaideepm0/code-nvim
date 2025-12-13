@@ -8,6 +8,7 @@
 - Use `Alt+Up/Down` to move the active lines and `Shift+Alt+Up/Down` to duplicate them in place.
 - Remove whole lines instantly with `Ctrl+Shift+K`, matching VS Code’s delete-line shortcut.
 - Press `Tab`/`Shift+Tab` to indent or dedent just the highlighted span, and overwrite any selection simply by typing.
+- Wrap any active selection by typing `'`, `"`, `(`, `{`, `[`, or `<`; the plugin inserts the matching closer automatically.
 - Press `Backspace` to delete whatever you have highlighted without needing to leave insert mode.
 
 ## Installation
@@ -39,7 +40,7 @@ Call `setup()` explicitly. This plugin is intentionally non‑opinionated and do
 - `selection_hl` (string\|false) – highlight group for simulated selections; set to `false` to turn highlights off.
 - `max_cursors` (number) – maximum simultaneous cursors (default `32`).
 - `mapping_strategy` (`"respect"`\|`"force"`\|`"skip"`) – whether to reuse your bindings, override them, or install nothing.
-- `feature_flags` / `mappings` – enable/disable whole shortcut groups (`selection`, `line_ops`, `multi_cursor`, `column_selection`, `tab`, `backspace`).
+- `feature_flags` / `mappings` – enable/disable whole shortcut groups (`selection`, `line_ops`, `multi_cursor`, `column_selection`, `tab`, `backspace`, `surround`).
 - `autocommands` – opt in/out of helper autocmds (`insert_char_pre`, `insert_leave`, `insert_enter`, `buf_enter`, `buf_cleanup`).
 - `notify` – custom notification function or `false` to stay quiet.
 - `keymaps` – override individual shortcuts (change `lhs`, tweak `opts`/`desc`, disable with `false`, or supply your own `callback`).

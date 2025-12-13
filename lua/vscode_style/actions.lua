@@ -1066,6 +1066,25 @@ local function char_to_text_lines(char)
   return { char }
 end
 
+local surround_pairs = {
+  ["'"] = "'",
+  ['"'] = '"',
+  ['('] = ')',
+  ['['] = ']',
+  ['{'] = '}',
+  ['<'] = '>',
+}
+
+local function surround_pair_for(char)
+  if not (state and state.config and state.config.feature_flags) then
+    return surround_pairs[char]
+  end
+  if state.config.feature_flags.surround == false then
+    return nil
+  end
+  return surround_pairs[char]
+end
+
 local function indent_string()
   local sw = vim.bo.shiftwidth
   if sw == 0 then
@@ -1222,13 +1241,15 @@ function M.on_insert_pre()
   if not char or char == '' then
     return
   end
-  vim.v.char = ''
   multi_cursor.sync_cursors()
   local selections = gather_selections()
   if #selections == 0 then
-    vim.v.char = char
     return
   end
+
+  local surround_close = surround_pair_for(char)
+  local should_surround = surround_close ~= nil
+  vim.v.char = ''
 
   require('vscode_style').deactivate_selection_keymaps()
 
@@ -1239,6 +1260,19 @@ function M.on_insert_pre()
       start = { line = sel.start.line, col = sel.start.col },
       finish = { line = sel.finish.line, col = sel.finish.col },
     }
+  end
+  local surround_entries
+  if should_surround then
+    surround_entries = {}
+    for _, sel in ipairs(snapshot) do
+      local text = vim.api.nvim_buf_get_text(buf(), sel.start.line, sel.start.col, sel.finish.line, sel.finish.col, {})
+      if #text == 0 then
+        text = { '' }
+      end
+      text[1] = char .. (text[1] or '')
+      text[#text] = (text[#text] or '') .. surround_close
+      surround_entries[#surround_entries + 1] = { selection = sel, text = text }
+    end
   end
   local insert_char = char
   local target_buf = vim.api.nvim_get_current_buf()
@@ -1255,6 +1289,54 @@ function M.on_insert_pre()
         return
       end
       if #snapshot == 0 then
+        return
+      end
+      if should_surround and surround_entries then
+        apply_selection_entries(surround_entries)
+        multi_cursor.sync_cursors()
+        local handled = {}
+        for _, entry in ipairs(surround_entries) do
+          handled[entry.selection.cursor] = true
+          multi_cursor.clear_selection(entry.selection.cursor)
+          local start_pos = entry.selection.start
+          local new_line = start_pos.line + (#entry.text - 1)
+          local new_col
+          if #entry.text == 1 then
+            new_col = start_pos.col + #entry.text[1]
+          else
+            new_col = #entry.text[#entry.text]
+          end
+          multi_cursor.update_position(entry.selection.cursor, new_line, new_col)
+        end
+        multi_cursor.update_highlights()
+        local text_lines = char_to_text_lines(insert_char)
+        local points = {}
+        for _, cursor in ipairs(multi_cursor.iter()) do
+          if not handled[cursor] then
+            table.insert(points, { cursor = cursor, line = cursor.line, col = cursor.col })
+          end
+        end
+        if #points > 0 then
+          sort_points_desc(points)
+          for _, point in ipairs(points) do
+            vim.api.nvim_buf_set_text(target_buf, point.line, point.col, point.line, point.col, text_lines)
+          end
+          local line_delta = #text_lines - 1
+          local tail_len = #text_lines[#text_lines]
+          local head_len = #text_lines[1]
+          for _, point in ipairs(points) do
+            local cursor = point.cursor
+            local new_line = point.line + line_delta
+            local new_col
+            if line_delta == 0 then
+              new_col = point.col + head_len
+            else
+              new_col = tail_len
+            end
+            multi_cursor.update_position(cursor, new_line, new_col)
+          end
+        end
+        multi_cursor.update_highlights()
         return
       end
       delete_selections(snapshot)

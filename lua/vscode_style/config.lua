@@ -7,6 +7,7 @@ local default_feature_flags = {
   column_selection = true,
   tab = true,
   backspace = true,
+  surround = true,
 }
 
 local default_autocommands = {
