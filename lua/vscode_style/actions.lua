@@ -1085,6 +1085,38 @@ local function surround_pair_for(char)
   return surround_pairs[char]
 end
 
+local function apply_surround_to_selections(open_char, close_char, selections)
+  if not selections or #selections == 0 then
+    return {}
+  end
+  local entries = {}
+  for _, sel in ipairs(selections) do
+    local text = vim.api.nvim_buf_get_text(buf(), sel.start.line, sel.start.col, sel.finish.line, sel.finish.col, {})
+    if #text == 0 then
+      text = { '' }
+    end
+    text[1] = open_char .. (text[1] or '')
+    text[#text] = (text[#text] or '') .. close_char
+    entries[#entries + 1] = { selection = sel, text = text }
+  end
+  apply_selection_entries(entries)
+  multi_cursor.sync_cursors()
+  for _, entry in ipairs(entries) do
+    multi_cursor.clear_selection(entry.selection.cursor)
+    local start_pos = entry.selection.start
+    local new_line = start_pos.line + (#entry.text - 1)
+    local new_col
+    if #entry.text == 1 then
+      new_col = start_pos.col + #entry.text[1]
+    else
+      new_col = #entry.text[#entry.text]
+    end
+    multi_cursor.update_position(entry.selection.cursor, new_line, new_col)
+  end
+  multi_cursor.update_highlights()
+  return entries
+end
+
 local function indent_string()
   local sw = vim.bo.shiftwidth
   if sw == 0 then
@@ -1312,19 +1344,6 @@ function M.on_insert_pre()
       finish = { line = sel.finish.line, col = sel.finish.col },
     }
   end
-  local surround_entries
-  if should_surround then
-    surround_entries = {}
-    for _, sel in ipairs(snapshot) do
-      local text = vim.api.nvim_buf_get_text(buf(), sel.start.line, sel.start.col, sel.finish.line, sel.finish.col, {})
-      if #text == 0 then
-        text = { '' }
-      end
-      text[1] = char .. (text[1] or '')
-      text[#text] = (text[#text] or '') .. surround_close
-      surround_entries[#surround_entries + 1] = { selection = sel, text = text }
-    end
-  end
   local insert_char = char
   local target_buf = vim.api.nvim_get_current_buf()
   local generation = multi_cursor.current_generation and multi_cursor.current_generation() or nil
@@ -1342,26 +1361,13 @@ function M.on_insert_pre()
       if #snapshot == 0 then
         return
       end
-      if should_surround and surround_entries then
+      if should_surround then
         pcall(vim.cmd, 'undojoin')
-        apply_selection_entries(surround_entries)
-        multi_cursor.sync_cursors()
+        apply_surround_to_selections(insert_char, surround_close, snapshot)
         local handled = {}
-        for _, entry in ipairs(surround_entries) do
-          handled[entry.selection.cursor] = true
-          multi_cursor.clear_selection(entry.selection.cursor)
-          local start_pos = entry.selection.start
-          local new_line = start_pos.line + (#entry.text - 1)
-          local new_col
-          if #entry.text == 1 then
-            new_col = start_pos.col + #entry.text[1]
-          else
-            new_col = #entry.text[#entry.text]
-          end
-          multi_cursor.update_position(entry.selection.cursor, new_line, new_col)
+        for _, sel in ipairs(snapshot) do
+          handled[sel.cursor] = true
         end
-        multi_cursor.update_highlights()
-        local text_lines = char_to_text_lines(insert_char)
         local points = {}
         for _, cursor in ipairs(multi_cursor.iter()) do
           if not handled[cursor] then
@@ -1369,6 +1375,8 @@ function M.on_insert_pre()
           end
         end
         if #points > 0 then
+          local text_lines = char_to_text_lines(insert_char)
+          pcall(vim.cmd, 'undojoin')
           sort_points_desc(points)
           for _, point in ipairs(points) do
             vim.api.nvim_buf_set_text(target_buf, point.line, point.col, point.line, point.col, text_lines)
@@ -1387,8 +1395,8 @@ function M.on_insert_pre()
             end
             multi_cursor.update_position(cursor, new_line, new_col)
           end
+          multi_cursor.update_highlights()
         end
-        multi_cursor.update_highlights()
         return
       end
       pcall(vim.cmd, 'undojoin')
