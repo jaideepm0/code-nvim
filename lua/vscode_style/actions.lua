@@ -1099,22 +1099,34 @@ local function apply_surround_to_selections(open_char, close_char, selections)
     text[#text] = (text[#text] or '') .. close_char
     entries[#entries + 1] = { selection = sel, text = text }
   end
-  apply_selection_entries(entries)
-  multi_cursor.sync_cursors()
+  table.sort(entries, function(a, b)
+    local sa, sb = a.selection.start, b.selection.start
+    if sa.line == sb.line then
+      return sa.col > sb.col
+    end
+    return sa.line > sb.line
+  end)
   for _, entry in ipairs(entries) do
-    multi_cursor.clear_selection(entry.selection.cursor)
-    local start_pos = entry.selection.start
-    local new_line = start_pos.line + (#entry.text - 1)
+    local sel = entry.selection
+    vim.api.nvim_buf_set_text(buf(), sel.start.line, sel.start.col, sel.finish.line, sel.finish.col, entry.text)
+  end
+  multi_cursor.sync_cursors()
+  local handled = {}
+  for _, entry in ipairs(entries) do
+    local cursor = entry.selection.cursor
+    handled[cursor] = true
+    multi_cursor.clear_selection(cursor)
+    local new_line = entry.selection.start.line + (#entry.text - 1)
     local new_col
     if #entry.text == 1 then
-      new_col = start_pos.col + #entry.text[1]
+      new_col = entry.selection.start.col + #entry.text[1]
     else
       new_col = #entry.text[#entry.text]
     end
-    multi_cursor.update_position(entry.selection.cursor, new_line, new_col)
+    multi_cursor.update_position(cursor, new_line, new_col)
   end
   multi_cursor.update_highlights()
-  return entries
+  return handled
 end
 
 local function indent_string()
@@ -1361,18 +1373,14 @@ function M.on_insert_pre()
       if #snapshot == 0 then
         return
       end
-      if should_surround then
-        pcall(vim.cmd, 'undojoin')
-        apply_surround_to_selections(insert_char, surround_close, snapshot)
-        local handled = {}
-        for _, sel in ipairs(snapshot) do
-          handled[sel.cursor] = true
-        end
-        local points = {}
-        for _, cursor in ipairs(multi_cursor.iter()) do
-          if not handled[cursor] then
-            table.insert(points, { cursor = cursor, line = cursor.line, col = cursor.col })
-          end
+  if should_surround then
+    pcall(vim.cmd, 'undojoin')
+    local handled = apply_surround_to_selections(insert_char, surround_close, snapshot)
+    local points = {}
+    for _, cursor in ipairs(multi_cursor.iter()) do
+      if not handled[cursor] then
+        table.insert(points, { cursor = cursor, line = cursor.line, col = cursor.col })
+      end
         end
         if #points > 0 then
           local text_lines = char_to_text_lines(insert_char)
