@@ -1423,46 +1423,59 @@ function M.on_insert_pre()
 
   if should_surround then
     set_surround_guard(surround_close)
-    local ok, err = pcall(function()
+    vim.schedule(function()
+      if not vim.api.nvim_buf_is_valid(target_buf) then
+        return
+      end
+      if generation and multi_cursor.current_generation and multi_cursor.current_generation() ~= generation then
+        return
+      end
       vim.api.nvim_buf_call(target_buf, function()
-        pcall(vim.cmd, 'undojoin')
-        local handled = apply_surround_to_selections(insert_char, surround_close, snapshot)
-        local points = {}
-        for _, cursor in ipairs(multi_cursor.iter()) do
-          if not handled[cursor] then
-            points[#points + 1] = { cursor = cursor, line = cursor.line, col = cursor.col }
-          end
-        end
-        if #points == 0 then
+        if vim.api.nvim_get_mode().mode:sub(1, 1) ~= 'i' then
           return
         end
-        local text_lines = char_to_text_lines(insert_char)
-        pcall(vim.cmd, 'undojoin')
-        sort_points_desc(points)
-        for _, point in ipairs(points) do
-          vim.api.nvim_buf_set_text(target_buf, point.line, point.col, point.line, point.col, text_lines)
+        if #snapshot == 0 then
+          return
         end
-        local line_delta = #text_lines - 1
-        local tail_len = #text_lines[#text_lines]
-        local head_len = #text_lines[1]
-        for _, point in ipairs(points) do
-          local cursor = point.cursor
-          local new_line = point.line + line_delta
-          local new_col
-          if line_delta == 0 then
-            new_col = point.col + head_len
-          else
-            new_col = tail_len
+        local ok, err = pcall(function()
+          pcall(vim.cmd, 'undojoin')
+          local handled = apply_surround_to_selections(insert_char, surround_close, snapshot)
+          local points = {}
+          for _, cursor in ipairs(multi_cursor.iter()) do
+            if not handled[cursor] then
+              points[#points + 1] = { cursor = cursor, line = cursor.line, col = cursor.col }
+            end
           end
-          multi_cursor.update_position(cursor, new_line, new_col)
+          if #points == 0 then
+            return
+          end
+          local text_lines = char_to_text_lines(insert_char)
+          pcall(vim.cmd, 'undojoin')
+          sort_points_desc(points)
+          for _, point in ipairs(points) do
+            vim.api.nvim_buf_set_text(target_buf, point.line, point.col, point.line, point.col, text_lines)
+          end
+          local line_delta = #text_lines - 1
+          local tail_len = #text_lines[#text_lines]
+          local head_len = #text_lines[1]
+          for _, point in ipairs(points) do
+            local cursor = point.cursor
+            local new_line = point.line + line_delta
+            local new_col
+            if line_delta == 0 then
+              new_col = point.col + head_len
+            else
+              new_col = tail_len
+            end
+            multi_cursor.update_position(cursor, new_line, new_col)
+          end
+          multi_cursor.update_highlights()
+        end)
+        if not ok then
+          notify(log_levels.ERROR, 'vscode_style surround failed: ' .. tostring(err))
         end
-        multi_cursor.update_highlights()
       end)
     end)
-
-    if not ok then
-      notify(log_levels.ERROR, 'vscode_style surround failed: ' .. tostring(err))
-    end
     return
   end
 
