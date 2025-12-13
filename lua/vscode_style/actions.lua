@@ -1243,7 +1243,58 @@ function M.on_insert_pre()
   end
   multi_cursor.sync_cursors()
   local selections = gather_selections()
+  local cursor_total = 0
+  for _ in ipairs(multi_cursor.iter()) do
+    cursor_total = cursor_total + 1
+  end
   if #selections == 0 then
+    if cursor_total <= 1 then
+      return
+    end
+    vim.v.char = ''
+    local insert_char = char
+    local target_buf = vim.api.nvim_get_current_buf()
+    local generation = multi_cursor.current_generation and multi_cursor.current_generation() or nil
+    local points = {}
+    for _, cursor in ipairs(multi_cursor.iter()) do
+      points[#points + 1] = { cursor = cursor, line = cursor.line, col = cursor.col }
+    end
+    vim.schedule(function()
+      if not vim.api.nvim_buf_is_valid(target_buf) then
+        return
+      end
+      if generation and multi_cursor.current_generation and multi_cursor.current_generation() ~= generation then
+        return
+      end
+      vim.api.nvim_buf_call(target_buf, function()
+        if vim.api.nvim_get_mode().mode:sub(1, 1) ~= 'i' then
+          return
+        end
+        if #points == 0 then
+          return
+        end
+        local text_lines = char_to_text_lines(insert_char)
+        sort_points_desc(points)
+        for _, point in ipairs(points) do
+          vim.api.nvim_buf_set_text(target_buf, point.line, point.col, point.line, point.col, text_lines)
+        end
+        local line_delta = #text_lines - 1
+        local tail_len = #text_lines[#text_lines]
+        local head_len = #text_lines[1]
+        for _, point in ipairs(points) do
+          local cursor = point.cursor
+          local new_line = point.line + line_delta
+          local new_col
+          if line_delta == 0 then
+            new_col = point.col + head_len
+          else
+            new_col = tail_len
+          end
+          multi_cursor.update_position(cursor, new_line, new_col)
+        end
+        multi_cursor.update_highlights()
+      end)
+    end)
     return
   end
 
@@ -1292,6 +1343,7 @@ function M.on_insert_pre()
         return
       end
       if should_surround and surround_entries then
+        pcall(vim.cmd, 'undojoin')
         apply_selection_entries(surround_entries)
         multi_cursor.sync_cursors()
         local handled = {}
@@ -1339,6 +1391,7 @@ function M.on_insert_pre()
         multi_cursor.update_highlights()
         return
       end
+      pcall(vim.cmd, 'undojoin')
       delete_selections(snapshot)
       multi_cursor.sync_cursors()
       collapse_deleted_selections(snapshot)
