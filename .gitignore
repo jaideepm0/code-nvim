@@ -2,3 +2,5 @@ AGENTS.md
 TODO.md
 tests
 .nvimlog
+bugs/*
+docs/*
