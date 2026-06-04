@@ -372,19 +372,6 @@ local function apply_selection(cursor, new_line, new_col)
   multi_cursor.set_selection(cursor, cursor.anchor, { line = new_line, col = new_col }, { keep_anchor = true })
 end
 
-local function clear_all_selections_if_needed()
-  local any_selection = false
-  for _, cursor in ipairs(multi_cursor.iter()) do
-    if cursor.selection then
-      any_selection = true
-      break
-    end
-  end
-  if not any_selection then
-    multi_cursor.clear_all_selections()
-  end
-end
-
 local function selection_bounds(selection)
   local anchor = selection.anchor
   local active = selection.active
@@ -424,15 +411,6 @@ local function gather_selections()
     end
   end
   return selections
-end
-
-local function selection_entries_with_text(selections)
-  local entries = {}
-  for _, sel in ipairs(selections) do
-    local text = vim.api.nvim_buf_get_text(buf(), sel.start.line, sel.start.col, sel.finish.line, sel.finish.col, {})
-    table.insert(entries, { selection = sel, text = text })
-  end
-  return entries
 end
 
 local function collect_selection_lines(selections)
@@ -493,36 +471,6 @@ local function adjust_cursor_columns(deltas)
     end
   end)
   multi_cursor.update_highlights()
-end
-
-local function apply_selection_entries(entries)
-  table.sort(entries, function(a, b)
-    local sa = a.selection.start
-    local sb = b.selection.start
-    if sa.line == sb.line then
-      return sa.col > sb.col
-    end
-    return sa.line > sb.line
-  end)
-  for _, entry in ipairs(entries) do
-    local sel = entry.selection
-    vim.api.nvim_buf_set_text(buf(), sel.start.line, sel.start.col, sel.finish.line, sel.finish.col, entry.text)
-  end
-end
-
-local function selection_active_from_text(start_line, start_col, text)
-  local end_line = start_line
-  local end_col = start_col
-  if #text == 0 then
-    return end_line, end_col
-  end
-  end_line = start_line + (#text - 1)
-  if #text == 1 then
-    end_col = start_col + #text[1]
-  else
-    end_col = #text[#text]
-  end
-  return end_line, end_col
 end
 
 local function dedupe_ranges(ranges)
@@ -637,12 +585,8 @@ end
 
 local function apply_delete_line(range)
   vim.api.nvim_buf_set_lines(buf(), range.start_line, range.end_line + 1, false, {})
-  if range.start_line >= line_count() then
-    local target = line_count()
-    if target == 0 then
-      target = 1
-    end
-    vim.api.nvim_buf_set_lines(buf(), target - 1, target - 1, false, { '' })
+  if line_count() == 0 then
+    vim.api.nvim_buf_set_lines(buf(), 0, -1, false, { '' })
   end
 end
 
@@ -694,7 +638,7 @@ local function find_next_occurrence(needle, start_line, start_col)
     if line == search_start_line then
       col_start = search_start_col + 1
     end
-    local found = text:find(vim.pesc(needle), col_start, true)
+    local found = text:find(needle, col_start, true)
     if found then
       return { line = line, col = found - 1 }, { line = line, col = found - 1 + #needle }
     end
@@ -708,7 +652,7 @@ local function collect_all_occurrences(needle)
     local text = get_line(line)
     local search_col = 1
     while true do
-      local s = text:find(vim.pesc(needle), search_col, true)
+      local s = text:find(needle, search_col, true)
       if not s then
         break
       end
@@ -720,10 +664,6 @@ local function collect_all_occurrences(needle)
     end
   end
   return matches
-end
-
-local function unique_cursor_key(cursor)
-  return string.format('%d:%d', cursor.line, cursor.col)
 end
 
 function M.setup(plugin_state, mc)
@@ -825,6 +765,12 @@ end
 function M.delete_line()
   multi_cursor.sync_cursors()
   local ranges = collect_active_ranges()
+  table.sort(ranges, function(a, b)
+    if a.start_line == b.start_line then
+      return a.end_line > b.end_line
+    end
+    return a.start_line > b.start_line
+  end)
   for _, range in ipairs(ranges) do
     apply_delete_line(range)
   end
@@ -1064,6 +1010,31 @@ local function char_to_text_lines(char)
     return { '', '' }
   end
   return { char }
+end
+
+local function insert_text_at_points(target_buf, points, text_lines)
+  if not points or #points == 0 then
+    return
+  end
+  sort_points_desc(points)
+  for _, point in ipairs(points) do
+    vim.api.nvim_buf_set_text(target_buf, point.line, point.col, point.line, point.col, text_lines)
+  end
+  if multi_cursor.refresh_from_extmarks then
+    multi_cursor.refresh_from_extmarks()
+  else
+    multi_cursor.sync_cursors()
+  end
+  multi_cursor.update_highlights()
+end
+
+function M.insert_text_at_cursors(text)
+  multi_cursor.sync_cursors()
+  local points = {}
+  for _, cursor in ipairs(multi_cursor.iter()) do
+    points[#points + 1] = { cursor = cursor, line = cursor.line, col = cursor.col }
+  end
+  insert_text_at_points(buf(), points, char_to_text_lines(text or ''))
 end
 
 local surround_pairs = {
@@ -1378,26 +1349,7 @@ function M.on_insert_pre()
         if #points == 0 then
           return
         end
-        local text_lines = char_to_text_lines(insert_char)
-        sort_points_desc(points)
-        for _, point in ipairs(points) do
-          vim.api.nvim_buf_set_text(target_buf, point.line, point.col, point.line, point.col, text_lines)
-        end
-        local line_delta = #text_lines - 1
-        local tail_len = #text_lines[#text_lines]
-        local head_len = #text_lines[1]
-        for _, point in ipairs(points) do
-          local cursor = point.cursor
-          local new_line = point.line + line_delta
-          local new_col
-          if line_delta == 0 then
-            new_col = point.col + head_len
-          else
-            new_col = tail_len
-          end
-          multi_cursor.update_position(cursor, new_line, new_col)
-        end
-        multi_cursor.update_highlights()
+        insert_text_at_points(target_buf, points, char_to_text_lines(insert_char))
       end)
     end)
     return
@@ -1449,27 +1401,8 @@ function M.on_insert_pre()
           if #points == 0 then
             return
           end
-          local text_lines = char_to_text_lines(insert_char)
           pcall(vim.cmd, 'undojoin')
-          sort_points_desc(points)
-          for _, point in ipairs(points) do
-            vim.api.nvim_buf_set_text(target_buf, point.line, point.col, point.line, point.col, text_lines)
-          end
-          local line_delta = #text_lines - 1
-          local tail_len = #text_lines[#text_lines]
-          local head_len = #text_lines[1]
-          for _, point in ipairs(points) do
-            local cursor = point.cursor
-            local new_line = point.line + line_delta
-            local new_col
-            if line_delta == 0 then
-              new_col = point.col + head_len
-            else
-              new_col = tail_len
-            end
-            multi_cursor.update_position(cursor, new_line, new_col)
-          end
-          multi_cursor.update_highlights()
+          insert_text_at_points(target_buf, points, char_to_text_lines(insert_char))
         end)
         if not ok then
           notify(log_levels.ERROR, 'vscode_style surround failed: ' .. tostring(err))
@@ -1498,7 +1431,6 @@ function M.on_insert_pre()
       multi_cursor.sync_cursors()
       collapse_deleted_selections(snapshot)
       multi_cursor.update_highlights()
-      local text_lines = char_to_text_lines(insert_char)
       local points = {}
       for _, cursor in ipairs(multi_cursor.iter()) do
         table.insert(points, { cursor = cursor, line = cursor.line, col = cursor.col })
@@ -1506,25 +1438,7 @@ function M.on_insert_pre()
       if #points == 0 then
         return
       end
-      sort_points_desc(points)
-      for _, point in ipairs(points) do
-        vim.api.nvim_buf_set_text(target_buf, point.line, point.col, point.line, point.col, text_lines)
-      end
-      local line_delta = #text_lines - 1
-      local tail_len = #text_lines[#text_lines]
-      local head_len = #text_lines[1]
-      for _, point in ipairs(points) do
-        local cursor = point.cursor
-        local new_line = point.line + line_delta
-        local new_col
-        if line_delta == 0 then
-          new_col = point.col + head_len
-        else
-          new_col = tail_len
-        end
-        multi_cursor.update_position(cursor, new_line, new_col)
-      end
-      multi_cursor.update_highlights()
+      insert_text_at_points(target_buf, points, char_to_text_lines(insert_char))
     end)
   end)
 end

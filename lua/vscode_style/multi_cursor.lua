@@ -57,7 +57,7 @@ local function create_cursor(line, col, opts)
   col = clamp(col or 0, 0, #line_text)
 
   local mark_id = vim.api.nvim_buf_set_extmark(buf_handle, state.ns, line, col, {
-    right_gravity = false,
+    right_gravity = true,
   })
 
   local cursor = {
@@ -119,7 +119,7 @@ local function sync_cursor_from_extmark(cursor)
     cursor.col = current[2]
     cursor.id = vim.api.nvim_buf_set_extmark(buf(), state.ns, cursor.line, cursor.col, {
       id = cursor.id,
-      right_gravity = false,
+      right_gravity = true,
     })
   end
 end
@@ -145,26 +145,6 @@ local function sort_cursors()
   elseif state.cursors[1] then
     state.cursors[1].is_primary = true
   end
-end
-
-local function has_multiple_cursors()
-  return state.cursors and #state.cursors > 1
-end
-
-local function cursor_has_selection(cursor)
-  return cursor and cursor.selection ~= nil
-end
-
-local function any_cursor_has_selection()
-  if not state.cursors then
-    return false
-  end
-  for _, cursor in ipairs(state.cursors) do
-    if cursor_has_selection(cursor) then
-      return true
-    end
-  end
-  return false
 end
 
 local function ensure_primary()
@@ -194,7 +174,7 @@ local function ensure_primary()
       primary.col = col
       primary.id = vim.api.nvim_buf_set_extmark(buf(), state.ns, line, col, {
         id = primary.id,
-        right_gravity = false,
+        right_gravity = true,
       })
     end
   end
@@ -289,6 +269,32 @@ function M.sync_cursors()
   end
 end
 
+function M.refresh_from_extmarks()
+  ensure_namespace()
+  M.switch_buffer()
+  if #state.cursors == 0 then
+    ensure_primary()
+  end
+  for _, cursor in ipairs(state.cursors) do
+    sync_cursor_from_extmark(cursor)
+  end
+  sort_cursors()
+  local primary
+  for _, cur in ipairs(state.cursors) do
+    if cur.is_primary then
+      primary = cur
+      break
+    end
+  end
+  primary = primary or state.cursors[1]
+  if primary then
+    local line, col = sanitize_position({ line = primary.line, col = primary.col })
+    primary.line = line
+    primary.col = col
+    vim.api.nvim_win_set_cursor(0, { line + 1, col })
+  end
+end
+
 function M.update_position(cursor, line, col)
   ensure_namespace()
   M.switch_buffer()
@@ -305,7 +311,7 @@ function M.update_position(cursor, line, col)
   cursor.col = col
   cursor.id = vim.api.nvim_buf_set_extmark(buf_handle, state.ns, line, col, {
     id = cursor.id,
-    right_gravity = false,
+    right_gravity = true,
   })
   if cursor.is_primary then
     vim.api.nvim_win_set_cursor(0, { line + 1, col })

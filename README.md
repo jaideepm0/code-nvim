@@ -77,3 +77,10 @@ require("vscode_style").setup({
 - Backspace interception happens without redefining your keys; if you disable the feature flag the editor reverts to native behaviour immediately.
 - Multi-cursor bindings ship enabled; toggle `feature_flags.multi_cursor = false` if you need a simpler single-cursor setup.
 - Normal mode remains untouched—hit `<Esc>` whenever you want native motions back.
+
+## Testing
+Run the headless regression suite from the repository root:
+
+```sh
+nvim --headless -u NONE -n -l tests/headless_spec.lua
+```

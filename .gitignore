@@ -1,6 +1,7 @@
 AGENTS.md
 TODO.md
-tests
+tests/*
+!tests/headless_spec.lua
 .nvimlog
 bugs/*
 docs/*

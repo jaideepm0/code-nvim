@@ -43,34 +43,81 @@ local function clear_keymaps()
   end
   for _, entry in ipairs(state.applied_keymaps) do
     local lhs = entry.lhs
-    local opts = entry.opts
     if lhs then
+      local opts = entry.buffer and { buffer = entry.buffer } or nil
       pcall(vim.keymap.del, 'i', lhs, opts)
-      local restore = state.keymap_restore and state.keymap_restore[lhs]
+      local restore_key = entry.restore_key
+      local restore = restore_key and state.keymap_restore and state.keymap_restore[restore_key]
       if restore then
-        pcall(vim.fn.mapset, 'i', false, restore)
-        state.keymap_restore[lhs] = nil
+        if entry.buffer and vim.api.nvim_buf_is_valid(entry.buffer) then
+          pcall(vim.api.nvim_buf_call, entry.buffer, function()
+            vim.fn.mapset('i', false, restore)
+          end)
+        elseif not entry.buffer then
+          pcall(vim.fn.mapset, 'i', false, restore)
+        end
+        state.keymap_restore[restore_key] = nil
       end
     end
   end
   state.applied_keymaps = {}
 end
 
-local function record_applied_keymap(lhs, opts)
-  table.insert(state.applied_keymaps, { lhs = lhs, opts = opts })
+local function record_applied_keymap(lhs, buffer, restore_key)
+  table.insert(state.applied_keymaps, { lhs = lhs, buffer = buffer, restore_key = restore_key })
 end
 
 local function sanitize_buffer_option(buffer)
   if buffer == nil then
     return nil
   end
-  if buffer == true then
-    return 0
+  if buffer == true or buffer == 0 then
+    return vim.api.nvim_get_current_buf()
   end
-  if type(buffer) == 'number' then
+  if type(buffer) == 'number' and vim.api.nvim_buf_is_valid(buffer) then
     return buffer
   end
   return nil
+end
+
+local function restore_key(lhs, buffer)
+  if buffer then
+    return string.format('buf:%d:%s', buffer, lhs)
+  end
+  return 'global:' .. lhs
+end
+
+local function buffer_local_maparg(bufnr, lhs)
+  if not (bufnr and vim.api.nvim_buf_is_valid(bufnr)) then
+    return nil
+  end
+  local ok, result = pcall(vim.api.nvim_buf_call, bufnr, function()
+    local existing = vim.fn.maparg(lhs, 'i', false, true)
+    if type(existing) == 'table' and existing.lhs ~= '' and existing.buffer == 1 then
+      return existing
+    end
+    return nil
+  end)
+  if ok then
+    return result
+  end
+  return nil
+end
+
+local function global_maparg(lhs)
+  for _, existing in ipairs(vim.api.nvim_get_keymap('i')) do
+    if existing.lhs == lhs then
+      return existing
+    end
+  end
+  return nil
+end
+
+local function has_any_insert_map(lhs, buffer)
+  if buffer and buffer_local_maparg(buffer, lhs) then
+    return true
+  end
+  return vim.fn.maparg(lhs, 'i') ~= ''
 end
 
 local function make_action_callback(spec)
@@ -120,27 +167,31 @@ local function apply_keymaps()
             opts.silent = true
           end
           local buffer = sanitize_buffer_option(opts.buffer)
+          if not buffer and opts.buf ~= nil then
+            buffer = sanitize_buffer_option(opts.buf)
+          end
+          opts.buf = nil
           if buffer then
             opts.buffer = buffer
           else
             opts.buffer = nil
           end
 
-          if strategy == 'respect' and vim.fn.maparg(lhs, 'i') ~= '' then
+          if strategy == 'respect' and has_any_insert_map(lhs, buffer) then
             goto continue
           end
 
+          local key = restore_key(lhs, buffer)
           if strategy == 'force' then
-            local existing = vim.fn.maparg(lhs, 'i', false, true)
+            local existing = buffer and buffer_local_maparg(buffer, lhs) or global_maparg(lhs)
             if type(existing) == 'table' and existing.lhs ~= '' then
-              state.keymap_restore[lhs] = state.keymap_restore[lhs] or existing
+              state.keymap_restore[key] = state.keymap_restore[key] or existing
             end
           end
 
           local ok, err = pcall(vim.keymap.set, 'i', lhs, callback, opts)
           if ok then
-            local del_opts = opts.buffer and { buffer = opts.buffer } or nil
-            record_applied_keymap(lhs, del_opts)
+            record_applied_keymap(lhs, buffer, key)
           else
             notify(vim.log.levels.WARN, string.format('vscode_style: failed to map %s (%s)', lhs, err))
           end
@@ -170,8 +221,8 @@ local function setup_autocommands()
   if state.config.autocommands.insert_leave then
     vim.api.nvim_create_autocmd('InsertLeave', {
       group = state.autocmd_group,
-      callback = function()
-        M.deactivate_selection_keymaps()
+      callback = function(args)
+        M.deactivate_selection_keymaps(args.buf)
         multi_cursor.clear_all_selections()
         multi_cursor.update_highlights()
       end,
@@ -179,6 +230,12 @@ local function setup_autocommands()
   end
 
   if state.config.autocommands.buf_enter then
+    vim.api.nvim_create_autocmd('BufLeave', {
+      group = state.autocmd_group,
+      callback = function(args)
+        M.deactivate_selection_keymaps(args.buf)
+      end,
+    })
     vim.api.nvim_create_autocmd('BufEnter', {
       group = state.autocmd_group,
       callback = function()
@@ -228,29 +285,56 @@ function M.get_state()
   return state
 end
 
-local selection_keymaps_active = false
+local selection_keymaps_active = {}
+local selection_keymap_restore = {}
 
-function M.activate_selection_keymaps()
-  if selection_keymaps_active then
-    return
+local function set_selection_delete_keymap(bufnr, lhs)
+  local restore = buffer_local_maparg(bufnr, lhs)
+  if restore then
+    selection_keymap_restore[bufnr] = selection_keymap_restore[bufnr] or {}
+    selection_keymap_restore[bufnr][lhs] = restore
   end
-  local opts = { buffer = true, silent = true }
-  vim.keymap.set('i', '<BS>', function()
+  vim.keymap.set('i', lhs, function()
     require('vscode_style.actions').delete_selection_and_cleanup()
-  end, opts)
-  vim.keymap.set('i', '<Del>', function()
-    require('vscode_style.actions').delete_selection_and_cleanup()
-  end, opts)
-  selection_keymaps_active = true
+  end, { buffer = bufnr, silent = true })
 end
 
-function M.deactivate_selection_keymaps()
-  if not selection_keymaps_active then
+function M.activate_selection_keymaps(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  if not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
-  pcall(vim.keymap.del, 'i', '<BS>', { buffer = true })
-  pcall(vim.keymap.del, 'i', '<Del>', { buffer = true })
-  selection_keymaps_active = false
+  if selection_keymaps_active[bufnr] then
+    return
+  end
+  set_selection_delete_keymap(bufnr, '<BS>')
+  set_selection_delete_keymap(bufnr, '<Del>')
+  selection_keymaps_active[bufnr] = true
+end
+
+function M.deactivate_selection_keymaps(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    selection_keymaps_active[bufnr] = nil
+    return
+  end
+  if not selection_keymaps_active[bufnr] then
+    return
+  end
+  for _, lhs in ipairs({ '<BS>', '<Del>' }) do
+    pcall(vim.keymap.del, 'i', lhs, { buffer = bufnr })
+    local restore = selection_keymap_restore[bufnr] and selection_keymap_restore[bufnr][lhs]
+    if restore then
+      pcall(vim.api.nvim_buf_call, bufnr, function()
+        vim.fn.mapset('i', false, restore)
+      end)
+      selection_keymap_restore[bufnr][lhs] = nil
+    end
+  end
+  if selection_keymap_restore[bufnr] and not next(selection_keymap_restore[bufnr]) then
+    selection_keymap_restore[bufnr] = nil
+  end
+  selection_keymaps_active[bufnr] = nil
 end
 
 return M
