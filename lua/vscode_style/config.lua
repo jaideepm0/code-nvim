@@ -13,7 +13,6 @@ local default_feature_flags = {
 local default_autocommands = {
   insert_char_pre = true,
   insert_leave = true,
-  insert_enter = true,
   buf_enter = true,
   buf_cleanup = true,
   cursor_moved_i = true,
@@ -105,6 +104,27 @@ local keymap_definitions = {
     handler = { fn = 'handle_shift_tab' },
   },
   {
+    name = 'backspace',
+    group = 'backspace',
+    lhs = '<BS>',
+    description = 'Delete selections or backspace at every cursor',
+    handler = { fn = 'handle_backspace' },
+  },
+  {
+    name = 'delete_forward',
+    group = 'backspace',
+    lhs = '<Del>',
+    description = 'Delete selections or delete at every cursor',
+    handler = { fn = 'handle_delete' },
+  },
+  {
+    name = 'insert_newline',
+    group = 'multi_cursor',
+    lhs = '<CR>',
+    description = 'Insert a newline at every cursor',
+    handler = { fn = 'handle_enter' },
+  },
+  {
     name = 'move_line_up',
     group = 'line_ops',
     lhs = '<M-Up>',
@@ -135,7 +155,7 @@ local keymap_definitions = {
   {
     name = 'delete_line',
     group = 'line_ops',
-    lhs = { '<C-S-k>', '<C-S-K>' },
+    lhs = '<C-S-K>',
     description = 'Delete current line',
     handler = { fn = 'delete_line' },
   },
@@ -191,8 +211,8 @@ local keymap_definitions = {
   {
     name = 'column_select_drag',
     group = 'column_selection',
-    lhs = '<S-M-LeftDrag>',
-    description = 'Start column selection',
+    lhs = { '<S-M-LeftMouse>', '<S-M-LeftDrag>' },
+    description = 'Start or update column selection',
     handler = { fn = 'column_selection_drag_start' },
   },
   {
@@ -206,13 +226,6 @@ local keymap_definitions = {
 
 for index, def in ipairs(keymap_definitions) do
   def.index = index
-end
-
-local function deepcopy(value)
-  if value == nil then
-    return nil
-  end
-  return vim.deepcopy(value)
 end
 
 local function normalize_lhs(lhs)
@@ -249,6 +262,7 @@ end
 
 local defaults = {
   selection_hl = 'Visual',
+  cursor_hl = 'Cursor',
   max_cursors = 32,
   mapping_strategy = 'respect',
   feature_flags = default_feature_flags,
@@ -291,13 +305,13 @@ local function resolve_handler(def, override)
     if type(override.callback) == 'function' then
       return nil, override.callback
     end
-    local handler = override.handler or {}
+    local handler = type(override.handler) == 'table' and override.handler or {}
     local fn = override.action or handler.fn or (override.fn)
     if type(fn) == 'string' then
       local args = override.args or handler.args
-      return { fn = fn, args = args and vim.deepcopy(args) or nil }, nil
+      return { fn = fn, args = type(args) == 'table' and vim.deepcopy(args) or nil }, nil
     end
-    if override.args and def.handler then
+    if type(override.args) == 'table' and def.handler then
       local base = vim.deepcopy(def.handler)
       base.args = vim.deepcopy(override.args)
       return base, nil
@@ -333,7 +347,7 @@ local function resolve_keymaps(config, overrides)
         if override.lhs ~= nil then
           lhs = normalize_lhs(override.lhs)
         end
-        if override.opts ~= nil then
+        if type(override.opts) == 'table' then
           opts = vim.tbl_deep_extend('force', {}, opts, override.opts)
         end
         if override.desc ~= nil then
@@ -364,7 +378,7 @@ end
 
 function M.normalize(user_config)
   local cfg = {}
-  user_config = user_config or {}
+  user_config = type(user_config) == 'table' and user_config or {}
 
   local selection_hl = user_config.selection_hl
   if selection_hl == nil then
@@ -378,10 +392,21 @@ function M.normalize(user_config)
   end
 
   local max_cursors = tonumber(user_config.max_cursors)
-  if max_cursors and max_cursors >= 1 then
+  if max_cursors and max_cursors >= 1 and max_cursors < math.huge then
     cfg.max_cursors = math.floor(max_cursors)
   else
     cfg.max_cursors = defaults.max_cursors
+  end
+
+  local cursor_hl = user_config.cursor_hl
+  if cursor_hl == nil then
+    cfg.cursor_hl = defaults.cursor_hl
+  elseif cursor_hl == false then
+    cfg.cursor_hl = false
+  elseif type(cursor_hl) == 'string' then
+    cfg.cursor_hl = cursor_hl
+  else
+    cfg.cursor_hl = defaults.cursor_hl
   end
 
   local mapping_strategy = user_config.mapping_strategy

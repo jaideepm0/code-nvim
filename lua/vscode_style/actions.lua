@@ -2,93 +2,9 @@ local M = {}
 
 local state
 local multi_cursor
+local util = require('vscode_style.util')
 
 local log_levels = vim.log.levels
-
-local backspace_cache
-
-local function backspace_enabled()
-  if not (state and state.config) then
-    return true
-  end
-  local flags = state.config.feature_flags or {}
-  return flags.backspace ~= false
-end
-
-local function canonicalize_backspace(name)
-  if type(name) ~= 'string' or name == '' then
-    return nil
-  end
-  -- Drop any terminal capability digits (e.g. <80>kb), symbols, and hyphens.
-  local cleaned = name:gsub('%d+', ''):gsub('[<>]', ''):gsub('%-', '')
-  cleaned = cleaned:lower()
-  if cleaned == '' then
-    return nil
-  end
-  return cleaned
-end
-
-local function ensure_backspace_cache()
-  if backspace_cache then
-    return backspace_cache
-  end
-  local raw = {
-    vim.api.nvim_replace_termcodes('<BS>', true, true, true),
-    vim.api.nvim_replace_termcodes('<C-H>', true, true, true),
-    vim.api.nvim_replace_termcodes('<kBS>', true, true, true),
-    vim.api.nvim_replace_termcodes('<C-BS>', true, true, true),
-    string.char(8),
-    string.char(127),
-  }
-  local names = {
-    ['<BS>'] = true,
-    ['<C-H>'] = true,
-    ['<Backspace>'] = true,
-    ['<kBS>'] = true,
-    ['<C-BS>'] = true,
-    ['<kb>'] = true,
-  }
-  local canonical = {
-    bs = true,
-    backspace = true,
-    ch = true,
-    cbs = true,
-    ctrlh = true,
-    kb = true,
-    kbs = true,
-    del = true,
-    delete = true,
-  }
-  backspace_cache = { raw = raw, names = names, canonical = canonical }
-  return backspace_cache
-end
-
-local function is_backspace_key(key)
-  if not key or key == '' then
-    return false
-  end
-  local cache = ensure_backspace_cache()
-  for _, raw in ipairs(cache.raw) do
-    if raw ~= '' and key == raw then
-      return true
-    end
-  end
-  local ok, name = pcall(vim.fn.keytrans, key)
-  if not ok or not name then
-    return false
-  end
-  if cache.names[name] then
-    return true
-  end
-  if name == '^?' then -- DEL is often produced by terminals for backspace
-    return true
-  end
-  local canonical = canonicalize_backspace(name)
-  if canonical and cache.canonical[canonical] then
-    return true
-  end
-  return false
-end
 
 local function notify(level, msg)
   local fn
@@ -111,15 +27,7 @@ local function buf()
   return vim.api.nvim_get_current_buf()
 end
 
-local function clamp(value, min_val, max_val)
-  if value < min_val then
-    return min_val
-  end
-  if value > max_val then
-    return max_val
-  end
-  return value
-end
+local clamp = util.clamp
 
 local function line_count()
   return vim.api.nvim_buf_line_count(buf())
@@ -143,9 +51,11 @@ local function feedkeys(keys)
 end
 
 local function move_char(line, col, direction)
+  local text = get_line(line)
+  col = util.codepoint_start(text, col)
   if direction == 'left' then
     if col > 0 then
-      return line, col - 1
+      return line, util.prev_codepoint(text, col)
     end
     if line == 0 then
       return line, col
@@ -154,9 +64,8 @@ local function move_char(line, col, direction)
     local prev_text = get_line(prev_line)
     return prev_line, #prev_text
   else
-    local text = get_line(line)
     if col < #text then
-      return line, col + 1
+      return line, util.next_codepoint(text, col)
     end
     local last_line = line_count() - 1
     if line >= last_line then
@@ -171,7 +80,13 @@ local function move_line_pos(line, col, direction)
   local target_line = direction == 'up' and (line - 1) or (line + 1)
   target_line = clamp(target_line, 0, line_count() - 1)
   local text = get_line(target_line)
-  local new_col = clamp(col, 0, #text)
+  local new_col
+  local ok, vcol = pcall(vim.fn.virtcol, { line + 1, col + 1 })
+  if ok and type(vcol) == 'number' then
+    new_col = util.virtual_to_byte_col(0, target_line, vcol, text)
+  else
+    new_col = util.codepoint_start(text, clamp(col, 0, #text))
+  end
   return target_line, new_col
 end
 
@@ -197,7 +112,7 @@ local function get_char(line, index)
   if index < 0 or index >= #text then
     return ''
   end
-  return text:sub(index + 1, index + 1)
+  return util.codepoint_at(text, index)
 end
 
 local function char_kind(ch)
@@ -207,7 +122,7 @@ local function char_kind(ch)
   if ch:match('%s') then
     return 'space'
   end
-  if ch:match('[%w_]') then
+  if ch:match('[%w_]') or ch:byte(1) >= 0x80 then
     return 'word'
   end
   return 'symbol'
@@ -218,7 +133,7 @@ local function step_left(line, col)
     return 0, 0
   end
   if col > 0 then
-    return line, col - 1
+    return line, util.prev_codepoint(get_line(line), col)
   end
   if line == 0 then
     return 0, 0
@@ -231,7 +146,7 @@ end
 local function step_right(line, col)
   local text = get_line(line)
   if col < #text then
-    return line, col + 1
+    return line, util.next_codepoint(text, col)
   end
   local last_line = line_count() - 1
   if line >= last_line then
@@ -251,9 +166,9 @@ local function char_kind_left(line, col)
     end
     local prev_line = line - 1
     local prev_text = get_line(prev_line)
-    return char_kind(get_char(prev_line, #prev_text - 1))
+    return char_kind(get_char(prev_line, util.prev_codepoint(prev_text, #prev_text)))
   end
-  return char_kind(get_char(line, col - 1))
+  return char_kind(get_char(line, util.prev_codepoint(get_line(line), col)))
 end
 
 local function char_kind_right(line, col)
@@ -274,7 +189,7 @@ local function sanitize_point(pos)
   end
   local line = clamp((pos and pos.line) or 0, 0, total - 1)
   local text = get_line(line)
-  local col = clamp((pos and pos.col) or 0, 0, #text)
+  local col = util.codepoint_start(text, clamp((pos and pos.col) or 0, 0, #text))
   return line, col
 end
 
@@ -334,7 +249,6 @@ local function move_word_right_position(line, col)
     return cur_line, cur_col
   end
 
-  local last_line, last_col = cur_line, cur_col
   while true do
     local next_line, next_col = step_right(cur_line, cur_col)
     if next_line == cur_line and next_col == cur_col then
@@ -344,7 +258,6 @@ local function move_word_right_position(line, col)
     if not next_kind or next_kind ~= kind then
       return next_line, next_col
     end
-    last_line, last_col = next_line, next_col
     cur_line, cur_col = next_line, next_col
   end
 end
@@ -473,17 +386,23 @@ local function adjust_cursor_columns(deltas)
   multi_cursor.update_highlights()
 end
 
-local function dedupe_ranges(ranges)
-  local seen = {}
-  local unique = {}
+local function merge_ranges(ranges)
+  table.sort(ranges, function(a, b)
+    if a.start_line == b.start_line then
+      return a.end_line < b.end_line
+    end
+    return a.start_line < b.start_line
+  end)
+  local merged = {}
   for _, range in ipairs(ranges) do
-    local key = string.format('%d:%d', range.start_line, range.end_line)
-    if not seen[key] then
-      seen[key] = true
-      table.insert(unique, range)
+    local previous = merged[#merged]
+    if previous and range.start_line <= previous.end_line + 1 then
+      previous.end_line = math.max(previous.end_line, range.end_line)
+    else
+      merged[#merged + 1] = { start_line = range.start_line, end_line = range.end_line }
     end
   end
-  return unique
+  return merged
 end
 
 local function normalize_ranges_for_direction(ranges, direction)
@@ -513,63 +432,90 @@ local function collect_active_ranges()
       table.insert(ranges, { start_line = cursor.line, end_line = cursor.line })
     end
   end
-  return dedupe_ranges(ranges)
+  return merge_ranges(ranges)
 end
 
-local function snapshot_cursors_in_range(range)
-  local snapshot = {}
+local function transform_cursor_lines(transform, selection_shifts)
   multi_cursor.for_each(function(cursor)
-    if cursor.line >= range.start_line and cursor.line <= range.end_line then
-      table.insert(snapshot, {
-        cursor = cursor,
-        line_offset = cursor.line - range.start_line,
-        col = cursor.col,
-      })
+    local shift = selection_shifts and selection_shifts[cursor]
+    local function transform_line(line)
+      return shift and (line + shift) or transform(line)
     end
-  end)
-  return snapshot
-end
-
-local function adjust_selections_for_move(range, delta)
-  local max_line = math.max(line_count() - 1, 0)
-  local function shift_point(point)
-    if point.line >= range.start_line and point.line <= range.end_line then
-      point.line = clamp(point.line + delta, 0, max_line)
-    end
-  end
-  multi_cursor.for_each(function(cursor)
-    if cursor.anchor and not cursor.selection then
-      shift_point(cursor.anchor)
+    cursor.line = transform_line(cursor.line)
+    if cursor.anchor then
+      cursor.anchor.line = transform_line(cursor.anchor.line)
     end
     if cursor.selection then
-      shift_point(cursor.selection.anchor)
-      shift_point(cursor.selection.active)
-      local anchor = { line = cursor.selection.anchor.line, col = cursor.selection.anchor.col }
-      local active = { line = cursor.selection.active.line, col = cursor.selection.active.col }
-      multi_cursor.set_selection(cursor, anchor, active)
+      cursor.selection.anchor.line = transform_line(cursor.selection.anchor.line)
+      cursor.selection.active.line = transform_line(cursor.selection.active.line)
     end
+    for _, selection in ipairs(cursor.selection_stack or {}) do
+      selection.anchor.line = transform_line(selection.anchor.line)
+      selection.active.line = transform_line(selection.active.line)
+    end
+    multi_cursor.update_position(cursor, cursor.line, cursor.col)
   end)
+end
+
+local function transform_for_move(range, direction)
+  local length = range.end_line - range.start_line + 1
+  return function(line)
+    if direction == 'up' then
+      if line >= range.start_line and line <= range.end_line then
+        return line - 1
+      elseif line == range.start_line - 1 then
+        return line + length
+      end
+    else
+      if line >= range.start_line and line <= range.end_line then
+        return line + 1
+      elseif line == range.end_line + 1 then
+        return line - length
+      end
+    end
+    return line
+  end
 end
 
 local function apply_move_line(range, direction)
   local start_line = range.start_line
   local end_line = range.end_line
   local total_lines = line_count()
+  local selection_shifts = {}
+  local delta = direction == 'up' and -1 or 1
+  multi_cursor.for_each(function(cursor)
+    if cursor.selection then
+      local start_pos, end_pos = selection_bounds(cursor.selection)
+      local selection_end = math.max(start_pos.line, end_pos.line - (end_pos.col == 0 and 1 or 0))
+      if start_pos.line >= range.start_line and selection_end <= range.end_line then
+        selection_shifts[cursor] = delta
+      end
+    end
+  end)
   if direction == 'up' then
     if start_line == 0 then
-      return
+      return false
     end
-    local block = vim.api.nvim_buf_get_lines(buf(), start_line, end_line + 1, false)
-    vim.api.nvim_buf_set_lines(buf(), start_line, end_line + 1, false, {})
-    vim.api.nvim_buf_set_lines(buf(), start_line - 1, start_line - 1, false, block)
+    local chunk = vim.api.nvim_buf_get_lines(buf(), start_line - 1, end_line + 1, false)
+    local replacement = {}
+    for index = 2, #chunk do
+      replacement[#replacement + 1] = chunk[index]
+    end
+    replacement[#replacement + 1] = chunk[1]
+    vim.api.nvim_buf_set_lines(buf(), start_line - 1, end_line + 1, false, replacement)
   else
     if end_line >= total_lines - 1 then
-      return
+      return false
     end
-    local block = vim.api.nvim_buf_get_lines(buf(), start_line, end_line + 1, false)
-    vim.api.nvim_buf_set_lines(buf(), start_line, end_line + 1, false, {})
-    vim.api.nvim_buf_set_lines(buf(), start_line + 1, start_line + 1, false, block)
+    local chunk = vim.api.nvim_buf_get_lines(buf(), start_line, end_line + 2, false)
+    local replacement = { chunk[#chunk] }
+    for index = 1, #chunk - 1 do
+      replacement[#replacement + 1] = chunk[index]
+    end
+    vim.api.nvim_buf_set_lines(buf(), start_line, end_line + 2, false, replacement)
   end
+  transform_cursor_lines(transform_for_move(range, direction), selection_shifts)
+  return true
 end
 
 local function apply_copy_line(range, direction)
@@ -578,49 +524,45 @@ local function apply_copy_line(range, direction)
   local block = vim.api.nvim_buf_get_lines(buf(), start_line, end_line + 1, false)
   if direction == 'up' then
     vim.api.nvim_buf_set_lines(buf(), start_line, start_line, false, block)
+    return start_line, #block
   else
     vim.api.nvim_buf_set_lines(buf(), end_line + 1, end_line + 1, false, block)
-  end
-end
-
-local function apply_delete_line(range)
-  vim.api.nvim_buf_set_lines(buf(), range.start_line, range.end_line + 1, false, {})
-  if line_count() == 0 then
-    vim.api.nvim_buf_set_lines(buf(), 0, -1, false, { '' })
-  end
-end
-
-local function reposition_cursors_after_line_change(direction)
-  multi_cursor.sync_cursors()
-  for _, cursor in ipairs(multi_cursor.iter()) do
-    if direction == 'up' or direction == 'down' then
-      local line, col = cursor.line, cursor.col
-      local text = get_line(line)
-      if col > #text then
-        multi_cursor.update_position(cursor, line, #text)
-      end
-    end
+    return end_line + 1, #block
   end
 end
 
 local function get_cursor_word(cursor)
-  local ok, result = multi_cursor.with_cursor_position(cursor, function()
-    local word = vim.fn.expand('<cword>')
-    local start_pos = vim.fn.searchpos('\\<', 'bnW')
-    local end_pos = vim.fn.searchpos('\\>', 'nW')
-    return { word = word or '', start_pos = start_pos, end_pos = end_pos }
-  end)
-  if not ok or not result then
-    return '', { start_line = cursor.line, start_col = cursor.col }, { end_line = cursor.line, end_col = cursor.col }
+  local text = get_line(cursor.line)
+  local col = util.codepoint_start(text, cursor.col)
+  local probe = col
+  local char = util.codepoint_at(text, probe)
+  if char_kind(char) ~= 'word' and probe > 0 then
+    local previous = util.prev_codepoint(text, probe)
+    if char_kind(util.codepoint_at(text, previous)) == 'word' then
+      probe = previous
+    end
   end
-  local word = result.word or ''
-  local start_pos = result.start_pos or { cursor.line + 1, cursor.col + 1 }
-  local end_pos = result.end_pos or { cursor.line + 1, cursor.col + 1 }
-  local start_line = (start_pos[1] or (cursor.line + 1)) - 1
-  local start_col = (start_pos[2] or (cursor.col + 1)) - 1
-  local end_line = (end_pos[1] or (cursor.line + 1)) - 1
-  local end_col = (end_pos[2] or (cursor.col + 1)) - 1
-  return word, { start_line = start_line, start_col = start_col }, { end_line = end_line, end_col = end_col }
+  if char_kind(util.codepoint_at(text, probe)) ~= 'word' then
+    local pos = { line = cursor.line, col = col }
+    return '', pos, pos
+  end
+
+  local start_col = probe
+  while start_col > 0 do
+    local previous = util.prev_codepoint(text, start_col)
+    if char_kind(util.codepoint_at(text, previous)) ~= 'word' then
+      break
+    end
+    start_col = previous
+  end
+
+  local end_col = probe
+  while end_col < #text and char_kind(util.codepoint_at(text, end_col)) == 'word' do
+    end_col = util.next_codepoint(text, end_col)
+  end
+  return text:sub(start_col + 1, end_col),
+    { line = cursor.line, col = start_col },
+    { line = cursor.line, col = end_col }
 end
 
 local function get_selection_string(selection)
@@ -628,40 +570,59 @@ local function get_selection_string(selection)
   return table.concat(chunks, '\n')
 end
 
-local function find_next_occurrence(needle, start_line, start_col)
-  local search_start_line = start_line
-  local search_start_col = start_col
-  local total_lines = line_count()
-  for line = search_start_line, total_lines - 1 do
-    local text = get_line(line)
-    local col_start = 1
-    if line == search_start_line then
-      col_start = search_start_col + 1
-    end
-    local found = text:find(needle, col_start, true)
-    if found then
-      return { line = line, col = found - 1 }, { line = line, col = found - 1 + #needle }
+local function document_index()
+  local lines = vim.api.nvim_buf_get_lines(buf(), 0, -1, false)
+  local offsets = {}
+  local offset = 0
+  for index, text in ipairs(lines) do
+    offsets[index] = offset
+    offset = offset + #text
+    if index < #lines then
+      offset = offset + 1
     end
   end
-  return nil
+  return lines, offsets, table.concat(lines, '\n')
 end
 
-local function collect_all_occurrences(needle)
-  local matches = {}
-  for line = 0, line_count() - 1 do
-    local text = get_line(line)
-    local search_col = 1
-    while true do
-      local s = text:find(needle, search_col, true)
-      if not s then
-        break
-      end
-      table.insert(matches, {
-        anchor = { line = line, col = s - 1 },
-        active = { line = line, col = s - 1 + #needle },
-      })
-      search_col = s + #needle
+local function offset_to_position(lines, offsets, offset)
+  local low, high = 1, #offsets
+  while low <= high do
+    local middle = math.floor((low + high) / 2)
+    if offsets[middle] <= offset then
+      low = middle + 1
+    else
+      high = middle - 1
     end
+  end
+  local index = clamp(high, 1, #lines)
+  return { line = index - 1, col = clamp(offset - offsets[index], 0, #lines[index]) }
+end
+
+local function find_next_occurrence(needle, start_line, start_col)
+  local lines, offsets, document = document_index()
+  local line_index = clamp(start_line + 1, 1, #lines)
+  local start_offset = offsets[line_index] + clamp(start_col, 0, #lines[line_index])
+  local found_start, found_end = document:find(needle, start_offset + 1, true)
+  if not found_start then
+    return nil
+  end
+  return offset_to_position(lines, offsets, found_start - 1), offset_to_position(lines, offsets, found_end)
+end
+
+local function collect_all_occurrences(needle, limit)
+  local lines, offsets, document = document_index()
+  local matches = {}
+  local search_offset = 1
+  while #matches < limit do
+    local found_start, found_end = document:find(needle, search_offset, true)
+    if not found_start then
+      break
+    end
+    matches[#matches + 1] = {
+      anchor = offset_to_position(lines, offsets, found_start - 1),
+      active = offset_to_position(lines, offsets, found_end),
+    }
+    search_offset = found_end + 1
   end
   return matches
 end
@@ -737,34 +698,50 @@ function M.move_line(direction)
     if direction == 'down' and range.end_line >= total - 1 then
       goto continue
     end
-    local snapshot = snapshot_cursors_in_range(range)
-    local delta = direction == 'up' and -1 or 1
     apply_move_line(range, direction)
-    local max_line = math.max(line_count() - 1, 0)
-    local new_start = clamp(range.start_line + delta, 0, max_line)
-    for _, item in ipairs(snapshot) do
-      local target_line = clamp(new_start + item.line_offset, 0, max_line)
-      multi_cursor.update_position(item.cursor, target_line, item.col)
-    end
-    adjust_selections_for_move(range, delta)
     ::continue::
   end
   multi_cursor.update_highlights()
-  multi_cursor.sync_cursors()
 end
 
 function M.copy_line(direction)
   multi_cursor.sync_cursors()
-  local ranges = normalize_ranges_for_direction(collect_active_ranges(), direction)
+  local ranges = collect_active_ranges()
+  table.sort(ranges, function(a, b)
+    return a.start_line > b.start_line
+  end)
   for _, range in ipairs(ranges) do
-    apply_copy_line(range, direction)
+    local copy_shifts = {}
+    multi_cursor.for_each(function(cursor)
+      local cursor_start, cursor_end = cursor.line, cursor.line
+      if cursor.selection then
+        local start_pos, end_pos = selection_bounds(cursor.selection)
+        cursor_start = start_pos.line
+        cursor_end = math.max(start_pos.line, end_pos.line - (end_pos.col == 0 and 1 or 0))
+      end
+      if cursor_start >= range.start_line and cursor_end <= range.end_line then
+        copy_shifts[cursor] = direction == 'down' and (range.end_line - range.start_line + 1) or 0
+      end
+    end)
+    local insert_at, length = apply_copy_line(range, direction)
+    transform_cursor_lines(function(line)
+      return line >= insert_at and line + length or line
+    end, copy_shifts)
   end
-  reposition_cursors_after_line_change(direction)
+  multi_cursor.update_highlights()
 end
 
 function M.delete_line()
   multi_cursor.sync_cursors()
   local ranges = collect_active_ranges()
+  local cursor_defs = {}
+  for _, cursor in ipairs(multi_cursor.iter()) do
+    cursor_defs[#cursor_defs + 1] = {
+      line = cursor.line,
+      col = cursor.col,
+      is_primary = cursor.is_primary,
+    }
+  end
   table.sort(ranges, function(a, b)
     if a.start_line == b.start_line then
       return a.end_line > b.end_line
@@ -772,22 +749,43 @@ function M.delete_line()
     return a.start_line > b.start_line
   end)
   for _, range in ipairs(ranges) do
-    apply_delete_line(range)
+    vim.api.nvim_buf_set_lines(buf(), range.start_line, range.end_line + 1, false, {})
   end
-  reposition_cursors_after_line_change()
+
+  local ascending = vim.deepcopy(ranges)
+  table.sort(ascending, function(a, b)
+    return a.start_line < b.start_line
+  end)
+  local max_line = math.max(line_count() - 1, 0)
+  for _, def in ipairs(cursor_defs) do
+    local removed_before = 0
+    local target = def.line
+    for _, range in ipairs(ascending) do
+      local length = range.end_line - range.start_line + 1
+      if def.line > range.end_line then
+        removed_before = removed_before + length
+      elseif def.line >= range.start_line then
+        target = range.start_line
+        break
+      else
+        break
+      end
+    end
+    def.line = clamp(target - removed_before, 0, max_line)
+  end
+  multi_cursor.replace_all_cursors(cursor_defs)
+  multi_cursor.refresh_from_extmarks()
+  require('vscode_style').deactivate_selection_keymaps()
 end
 
 function M.alt_click_cursor()
-  local mouse_line = vim.v.mouse_lnum
-  local mouse_col = vim.v.mouse_col
-  if mouse_line == 0 then
+  local mouse = util.mouse_position()
+  if not mouse or mouse.bufnr ~= buf() then
     return
   end
-  local line = mouse_line - 1
-  local col = math.max(0, mouse_col - 1)
-  local text = get_line(line)
-  col = clamp(col, 0, #text)
-  local _, err = multi_cursor.add_cursor_at(line, col)
+  local text = get_line(mouse.line)
+  local col = util.codepoint_start(text, clamp(mouse.col, 0, #text))
+  local _, err = multi_cursor.add_cursor_at(mouse.line, col)
   if err then
     notify(log_levels.WARN, err)
   end
@@ -829,8 +827,14 @@ function M.add_selection_to_next_match()
   if primary.selection then
     needle = get_selection_string(primary.selection)
   else
-    local word = get_cursor_word(primary)
+    local word, word_start, word_end = get_cursor_word(primary)
     needle = word
+    if needle and needle ~= '' then
+      primary.anchor = copy_pos(word_start)
+      primary.selection = { anchor = copy_pos(word_start), active = copy_pos(word_end) }
+      multi_cursor.update_position(primary, word_end.line, word_end.col)
+      multi_cursor.set_selection(primary, word_start, word_end)
+    end
   end
   if not needle or needle == '' then
     return
@@ -882,7 +886,7 @@ function M.select_all_occurrences()
   if not needle or needle == '' then
     return
   end
-  local matches = collect_all_occurrences(needle)
+  local matches = collect_all_occurrences(needle, (state.config.max_cursors or 32) + 1)
   if #matches == 0 then
     return
   end
@@ -933,14 +937,14 @@ function M.expand_selection()
       return
     end
     -- Expand to indentation block
-    local target_indent = vim.fn.indent(start_pos.line)
+    local target_indent = vim.fn.indent(start_pos.line + 1)
     local top = start_pos.line
-    while top > 0 and vim.fn.indent(top - 1) >= target_indent do
+    while top > 0 and vim.fn.indent(top) >= target_indent do
       top = top - 1
     end
     local bottom = end_pos.line
     local total = line_count()
-    while bottom < total - 1 and vim.fn.indent(bottom + 1) >= target_indent do
+    while bottom < total - 1 and vim.fn.indent(bottom + 2) >= target_indent do
       bottom = bottom + 1
     end
     cursor.selection = {
@@ -978,21 +982,65 @@ end
 M.selection_bounds = selection_bounds
 
 local function delete_selections(selections)
-  table.sort(selections, function(a, b)
+  local function position_before_or_equal(a, b)
+    return a.line < b.line or (a.line == b.line and a.col <= b.col)
+  end
+  local function later_position(a, b)
+    if position_before_or_equal(a, b) then
+      return b
+    end
+    return a
+  end
+
+  for _, sel in ipairs(selections) do
+    sel.collapse_mark = vim.api.nvim_buf_set_extmark(buf(), state.ns, sel.start.line, sel.start.col, {
+      right_gravity = false,
+    })
+  end
+
+  local ascending = vim.deepcopy(selections)
+  table.sort(ascending, function(a, b)
+    if a.start.line == b.start.line then
+      return a.start.col < b.start.col
+    end
+    return a.start.line < b.start.line
+  end)
+  local edits = {}
+  for _, sel in ipairs(ascending) do
+    local previous = edits[#edits]
+    if previous and position_before_or_equal(sel.start, previous.finish) then
+      previous.finish = copy_pos(later_position(previous.finish, sel.finish))
+    else
+      edits[#edits + 1] = { start = copy_pos(sel.start), finish = copy_pos(sel.finish) }
+    end
+  end
+  table.sort(edits, function(a, b)
     if a.start.line == b.start.line then
       return a.start.col > b.start.col
     end
     return a.start.line > b.start.line
   end)
+  for _, edit in ipairs(edits) do
+    vim.api.nvim_buf_set_text(buf(), edit.start.line, edit.start.col, edit.finish.line, edit.finish.col, {})
+  end
+
   for _, sel in ipairs(selections) do
-    vim.api.nvim_buf_set_text(buf(), sel.start.line, sel.start.col, sel.finish.line, sel.finish.col, {})
+    local position = vim.api.nvim_buf_get_extmark_by_id(buf(), state.ns, sel.collapse_mark, {})
+    if position and position[1] then
+      sel.collapse = { line = position[1], col = position[2] }
+    else
+      sel.collapse = copy_pos(sel.start)
+    end
+    pcall(vim.api.nvim_buf_del_extmark, buf(), state.ns, sel.collapse_mark)
+    sel.collapse_mark = nil
   end
 end
 
 local function collapse_deleted_selections(selections)
   for _, sel in ipairs(selections) do
     multi_cursor.clear_selection(sel.cursor)
-    multi_cursor.update_position(sel.cursor, sel.start.line, sel.start.col)
+    local position = sel.collapse or sel.start
+    multi_cursor.update_position(sel.cursor, position.line, position.col)
   end
 end
 
@@ -1018,7 +1066,14 @@ local function insert_text_at_points(target_buf, points, text_lines)
   end
   sort_points_desc(points)
   for _, point in ipairs(points) do
-    vim.api.nvim_buf_set_text(target_buf, point.line, point.col, point.line, point.col, text_lines)
+    vim.api.nvim_buf_set_text(
+      target_buf,
+      point.line,
+      point.col,
+      point.line,
+      point.col,
+      point.text_lines or text_lines
+    )
   end
   if multi_cursor.refresh_from_extmarks then
     multi_cursor.refresh_from_extmarks()
@@ -1054,28 +1109,6 @@ local function surround_pair_for(char)
     return nil
   end
   return surround_pairs[char]
-end
-
-local function set_surround_guard(close_char)
-  if not state then
-    return
-  end
-  local seq = (state.surround_guard_seq or 0) + 1
-  state.surround_guard_seq = seq
-  local current_buf = vim.api.nvim_get_current_buf()
-  state.surround_guard = {
-    id = seq,
-    buf = current_buf,
-    close = close_char,
-  }
-  vim.defer_fn(function()
-    if not state then
-      return
-    end
-    if state.surround_guard and state.surround_guard.id == seq then
-      state.surround_guard = nil
-    end
-  end, 80)
 end
 
 local function apply_surround_to_selections(open_char, close_char, selections)
@@ -1126,17 +1159,19 @@ local function apply_surround_to_selections(open_char, close_char, selections)
   for _, entry in ipairs(entries) do
     local sel = entry.selection
     vim.api.nvim_buf_set_text(buf(), sel.start.line, sel.start.col, sel.finish.line, sel.finish.col, entry.text)
+    local target_line = sel.start.line + (#entry.text - 1)
+    local target_col = #entry.text == 1 and (sel.start.col + #entry.text[1]) or #entry.text[#entry.text]
+    entry.target_mark = vim.api.nvim_buf_set_extmark(buf(), state.ns, target_line, target_col, {
+      right_gravity = true,
+    })
   end
   multi_cursor.sync_cursors()
   local handled = {}
   for _, entry in ipairs(entries) do
-    local new_line = entry.selection.start.line + (#entry.text - 1)
-    local new_col
-    if #entry.text == 1 then
-      new_col = entry.selection.start.col + #entry.text[1]
-    else
-      new_col = #entry.text[#entry.text]
-    end
+    local target = vim.api.nvim_buf_get_extmark_by_id(buf(), state.ns, entry.target_mark, {})
+    local new_line = target[1] or entry.selection.start.line
+    local new_col = target[2] or entry.selection.start.col
+    pcall(vim.api.nvim_buf_del_extmark, buf(), state.ns, entry.target_mark)
     for _, cursor in ipairs(entry.cursors) do
       handled[cursor] = true
       multi_cursor.clear_selection(cursor)
@@ -1185,45 +1220,85 @@ local function remove_indent_prefix(text, indent)
   return text:sub(idx + 1), idx
 end
 
-local function process_backspace(snapshot)
+local function delete_at_cursors(direction)
   multi_cursor.sync_cursors()
-  local selections = snapshot or gather_selections()
+  local selections = gather_selections()
+  if #selections == 0 then
+    local cursors = multi_cursor.iter()
+    if #cursors <= 1 then
+      return false
+    end
+    for _, cursor in ipairs(cursors) do
+      local start_line, start_col = cursor.line, cursor.col
+      local finish_line, finish_col = cursor.line, cursor.col
+      if direction == 'left' then
+        start_line, start_col = move_char(cursor.line, cursor.col, 'left')
+      else
+        finish_line, finish_col = move_char(cursor.line, cursor.col, 'right')
+      end
+      if start_line ~= finish_line or start_col ~= finish_col then
+        selections[#selections + 1] = {
+          cursor = cursor,
+          start = { line = start_line, col = start_col },
+          finish = { line = finish_line, col = finish_col },
+        }
+      end
+    end
+  end
   if #selections == 0 then
     return false
   end
   delete_selections(selections)
-  multi_cursor.sync_cursors()
   collapse_deleted_selections(selections)
   multi_cursor.update_highlights()
   return true
 end
 
 function M.handle_backspace()
-  if not process_backspace() then
+  if not delete_at_cursors('left') then
     feedkeys('<BS>')
   end
 end
 
-function M.backspace_expr()
+function M.handle_delete()
+  if not delete_at_cursors('right') then
+    feedkeys('<Del>')
+  end
+end
+
+function M.handle_enter()
   multi_cursor.sync_cursors()
-  local snapshot = gather_selections()
-  if #snapshot == 0 then
-    return vim.api.nvim_replace_termcodes('<BS>', true, false, true)
+  local selections = gather_selections()
+  if #selections == 0 and #multi_cursor.iter() <= 1 then
+    feedkeys('<CR>')
+    return
   end
-  local target_buf = vim.api.nvim_get_current_buf()
-  if vim.api.nvim_buf_is_valid(target_buf) then
-    vim.api.nvim_buf_call(target_buf, function()
-      pcall(vim.cmd, 'undojoin')
-      process_backspace(snapshot)
-    end)
+  if #selections > 0 then
+    delete_selections(selections)
+    collapse_deleted_selections(selections)
+    require('vscode_style').deactivate_selection_keymaps()
   end
-  return ''
+  local points = {}
+  for _, cursor in ipairs(multi_cursor.iter()) do
+    local indent = get_line(cursor.line):match('^[ \t]*') or ''
+    points[#points + 1] = {
+      cursor = cursor,
+      line = cursor.line,
+      col = cursor.col,
+      text_lines = { '', indent },
+    }
+  end
+  insert_text_at_points(buf(), points, { '', '' })
 end
 
 function M.handle_tab()
   multi_cursor.sync_cursors()
   local selections = gather_selections()
   if #selections == 0 then
+    if #multi_cursor.iter() > 1 then
+      M.insert_text_at_cursors(indent_string())
+      return
+    end
     feedkeys('<Tab>')
     return
   end
@@ -1238,7 +1313,6 @@ function M.handle_tab()
   end
   local bufnr = buf()
   local deltas = {}
-  pcall(vim.cmd, 'undojoin')
   for _, line in ipairs(lines) do
     local text = get_line(line)
     vim.api.nvim_buf_set_lines(bufnr, line, line + 1, false, { indent .. text })
@@ -1250,11 +1324,23 @@ end
 function M.handle_shift_tab()
   multi_cursor.sync_cursors()
   local selections = gather_selections()
-  if #selections == 0 then
+  local lines
+  if #selections == 0 and #multi_cursor.iter() > 1 then
+    local seen = {}
+    lines = {}
+    for _, cursor in ipairs(multi_cursor.iter()) do
+      if not seen[cursor.line] then
+        seen[cursor.line] = true
+        lines[#lines + 1] = cursor.line
+      end
+    end
+    table.sort(lines)
+  elseif #selections == 0 then
     feedkeys('<S-Tab>')
     return
+  else
+    lines = collect_selection_lines(selections)
   end
-  local lines = collect_selection_lines(selections)
   if #lines == 0 then
     return
   end
@@ -1262,7 +1348,6 @@ function M.handle_shift_tab()
   local bufnr = buf()
   local deltas = {}
   local changed = false
-  pcall(vim.cmd, 'undojoin')
   for _, line in ipairs(lines) do
     local text = get_line(line)
     local updated, removed = remove_indent_prefix(text, indent)
@@ -1278,241 +1363,157 @@ function M.handle_shift_tab()
   adjust_cursor_columns(deltas)
 end
 
-function M.on_insert_pre()
-  local char = vim.v.char
-  local key = vim.v.key
-  if state and state.surround_guard and char and char ~= '' then
-    local guard = state.surround_guard
-    if guard.buf ~= vim.api.nvim_get_current_buf() then
-      state.surround_guard = nil
-    elseif guard.close and char == guard.close then
-      vim.v.char = ''
-      state.surround_guard = nil
-      return
-    end
-  end
-  if backspace_enabled() and is_backspace_key(key) then
-    multi_cursor.sync_cursors()
-    local snapshot = gather_selections()
-    if #snapshot > 0 then
-      vim.v.char = ''
-      local ok, err = pcall(function()
-        pcall(vim.cmd, 'undojoin')
-        process_backspace(snapshot)
-      end)
-      if not ok then
-        notify(log_levels.ERROR, 'vscode_style backspace failed: ' .. err)
-      end
-      return
-    end
-    return -- allow native backspace when nothing is selected
-  end
-  if key == 'Tab' or key == 'S-Tab' then
-    return
-  end
-  if not char or char == '' then
-    return
-  end
-  multi_cursor.sync_cursors()
-  local selections = gather_selections()
-  local cursor_total = 0
-  for _ in ipairs(multi_cursor.iter()) do
-    cursor_total = cursor_total + 1
-  end
-  if #selections == 0 then
-    if cursor_total <= 1 then
-      return
-    end
-    vim.v.char = ''
-    local surround_close = surround_pair_for(char)
-    if surround_close then
-      set_surround_guard(surround_close)
-    end
-    local insert_char = char
-    local target_buf = vim.api.nvim_get_current_buf()
-    local generation = multi_cursor.current_generation and multi_cursor.current_generation() or nil
-    local points = {}
-    for _, cursor in ipairs(multi_cursor.iter()) do
+local function insert_at_live_cursors(target_buf, text, skip)
+  local points = {}
+  for _, cursor in ipairs(multi_cursor.iter()) do
+    if not skip or not skip[cursor] then
       points[#points + 1] = { cursor = cursor, line = cursor.line, col = cursor.col }
     end
-    vim.schedule(function()
-      if not vim.api.nvim_buf_is_valid(target_buf) then
-        return
-      end
-      if generation and multi_cursor.current_generation and multi_cursor.current_generation() ~= generation then
-        return
-      end
-      vim.api.nvim_buf_call(target_buf, function()
-        if vim.api.nvim_get_mode().mode:sub(1, 1) ~= 'i' then
-          return
-        end
-        if #points == 0 then
-          return
-        end
-        insert_text_at_points(target_buf, points, char_to_text_lines(insert_char))
-      end)
-    end)
+  end
+  insert_text_at_points(target_buf, points, char_to_text_lines(text))
+end
+
+local function flush_pending_insert(target_buf, pending)
+  if not vim.api.nvim_buf_is_valid(target_buf) then
     return
   end
-
-  local surround_close = surround_pair_for(char)
-  local should_surround = surround_close ~= nil
-  vim.v.char = ''
-
-  require('vscode_style').deactivate_selection_keymaps()
-
-  local snapshot = {}
-  for _, sel in ipairs(selections) do
-    snapshot[#snapshot + 1] = {
-      cursor = sel.cursor,
-      start = { line = sel.start.line, col = sel.start.col },
-      finish = { line = sel.finish.line, col = sel.finish.col },
-    }
-  end
-  local insert_char = char
-  local target_buf = vim.api.nvim_get_current_buf()
-  local generation = multi_cursor.current_generation and multi_cursor.current_generation() or nil
-
-  if should_surround then
-    set_surround_guard(surround_close)
-    vim.schedule(function()
-      if not vim.api.nvim_buf_is_valid(target_buf) then
-        return
-      end
-      if generation and multi_cursor.current_generation and multi_cursor.current_generation() ~= generation then
-        return
-      end
-      vim.api.nvim_buf_call(target_buf, function()
-        if vim.api.nvim_get_mode().mode:sub(1, 1) ~= 'i' then
-          return
-        end
-        if #snapshot == 0 then
-          return
-        end
-        local ok, err = pcall(function()
-          pcall(vim.cmd, 'undojoin')
-          local handled = apply_surround_to_selections(insert_char, surround_close, snapshot)
-          local points = {}
-          for _, cursor in ipairs(multi_cursor.iter()) do
-            if not handled[cursor] then
-              points[#points + 1] = { cursor = cursor, line = cursor.line, col = cursor.col }
-            end
-          end
-          if #points == 0 then
-            return
-          end
-          pcall(vim.cmd, 'undojoin')
-          insert_text_at_points(target_buf, points, char_to_text_lines(insert_char))
-        end)
-        if not ok then
-          notify(log_levels.ERROR, 'vscode_style surround failed: ' .. tostring(err))
-        end
-      end)
-    end)
+  if not state.pending_inserts or state.pending_inserts[target_buf] ~= pending then
     return
   end
+  state.pending_inserts[target_buf] = nil
+  vim.api.nvim_buf_call(target_buf, function()
+    local ok, err = pcall(function()
+      if pending.primary then
+        multi_cursor.ensure_primary_cursor_at(pending.primary.line, pending.primary.col)
+      end
+      multi_cursor.refresh_from_extmarks()
+      local selections = pending.selections or gather_selections()
+      local first = table.remove(pending.chars, 1)
+      if not first then
+        return
+      end
 
-  vim.schedule(function()
-    if not vim.api.nvim_buf_is_valid(target_buf) then
-      return
-    end
-    if generation and multi_cursor.current_generation and multi_cursor.current_generation() ~= generation then
-      return
-    end
-    vim.api.nvim_buf_call(target_buf, function()
-      if vim.api.nvim_get_mode().mode:sub(1, 1) ~= 'i' then
-        return
+      if #selections > 0 then
+        require('vscode_style').deactivate_selection_keymaps(target_buf)
+        local close = surround_pair_for(first)
+        if close then
+          local handled = apply_surround_to_selections(first, close, selections)
+          insert_at_live_cursors(target_buf, first, handled)
+        else
+          delete_selections(selections)
+          collapse_deleted_selections(selections)
+          insert_at_live_cursors(target_buf, first)
+        end
+      else
+        insert_at_live_cursors(target_buf, first)
       end
-      if #snapshot == 0 then
-        return
+
+      if #pending.chars > 0 then
+        insert_at_live_cursors(target_buf, table.concat(pending.chars))
       end
-      pcall(vim.cmd, 'undojoin')
-      delete_selections(snapshot)
-      multi_cursor.sync_cursors()
-      collapse_deleted_selections(snapshot)
-      multi_cursor.update_highlights()
-      local points = {}
-      for _, cursor in ipairs(multi_cursor.iter()) do
-        table.insert(points, { cursor = cursor, line = cursor.line, col = cursor.col })
-      end
-      if #points == 0 then
-        return
-      end
-      insert_text_at_points(target_buf, points, char_to_text_lines(insert_char))
     end)
+    if not ok then
+      notify(log_levels.ERROR, 'vscode_style insert failed: ' .. tostring(err))
+    end
   end)
 end
 
-function M.column_selection_drag_start()
-  state.column_selecting = true
-  local anchor_line = vim.v.mouse_lnum
-  local anchor_col = vim.v.mouse_col
-  if anchor_line == 0 then
-    state.column_anchor = nil
+local function queue_insert(char)
+  local target_buf = buf()
+  state.pending_inserts = state.pending_inserts or {}
+  local pending = state.pending_inserts[target_buf]
+  if pending then
+    pending.chars[#pending.chars + 1] = char
     return
   end
-  state.column_anchor = { line = anchor_line - 1, col = math.max(0, anchor_col - 1) }
-  multi_cursor.replace_all_cursors({
-    {
-      line = state.column_anchor.line,
-      col = state.column_anchor.col,
-      anchor = copy_pos(state.column_anchor),
-      selection = nil,
-      is_primary = true,
-    },
-  })
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  pending = {
+    chars = { char },
+    primary = { line = cursor[1] - 1, col = cursor[2] },
+    selections = gather_selections(),
+  }
+  state.pending_inserts[target_buf] = pending
+  vim.schedule(function()
+    flush_pending_insert(target_buf, pending)
+  end)
 end
 
-function M.column_selection_drag_end()
-  if not state.column_selecting or not state.column_anchor then
+function M.on_insert_pre()
+  local char = vim.v.char
+  local key = vim.v.key
+  if key == 'Tab' or key == 'S-Tab' or not char or char == '' then
     return
   end
-  local target_line = vim.v.mouse_lnum
-  local target_col = vim.v.mouse_col
-  if target_line == 0 then
+  if not multi_cursor.requires_insert_handling() then
     return
   end
-  target_line = target_line - 1
-  target_col = math.max(0, target_col - 1)
-  local start_line = math.min(state.column_anchor.line, target_line)
-  local end_line = math.max(state.column_anchor.line, target_line)
-  local col = state.column_anchor.col
+  vim.v.char = ''
+  queue_insert(char)
+end
+
+function M.column_selection_drag_start()
+  local mouse = util.mouse_position()
+  if not mouse or mouse.bufnr ~= buf() then
+    return
+  end
+  if not state.column_selecting then
+    state.column_selecting = true
+    state.column_anchor = {
+      line = mouse.line,
+      vcol = mouse.vcol,
+      winid = mouse.winid,
+      bufnr = mouse.bufnr,
+    }
+  end
+
+  local anchor = state.column_anchor
+  if not anchor or anchor.bufnr ~= mouse.bufnr then
+    return
+  end
+  local start_line = math.min(anchor.line, mouse.line)
+  local end_line = math.max(anchor.line, mouse.line)
   local cursor_defs = {}
-  local index = 1
   for line = start_line, end_line do
     local text = get_line(line)
-    local effective_col = clamp(col, 0, #text)
-    cursor_defs[index] = {
+    local anchor_col = util.virtual_to_byte_col(anchor.winid, line, anchor.vcol, text)
+    local active_col = util.virtual_to_byte_col(mouse.winid, line, mouse.vcol, text)
+    cursor_defs[#cursor_defs + 1] = {
       line = line,
-      col = effective_col,
-      anchor = { line = line, col = col <= #text and col or #text },
+      col = active_col,
+      anchor = { line = line, col = anchor_col },
       selection = {
-        anchor = { line = line, col = math.min(col, #text) },
-        active = { line = line, col = clamp(target_col, 0, #text) },
+        anchor = { line = line, col = anchor_col },
+        active = { line = line, col = active_col },
       },
       is_primary = line == start_line,
     }
-    index = index + 1
   end
   multi_cursor.replace_all_cursors(cursor_defs)
   multi_cursor.update_highlights()
+end
+
+function M.column_selection_drag_end()
+  if not state.column_selecting then
+    return
+  end
+  M.column_selection_drag_start()
   state.column_selecting = false
   state.column_anchor = nil
 end
 
-function M.delete_selection_and_cleanup()
+function M.delete_selection_and_cleanup(direction)
   multi_cursor.sync_cursors()
   local selections = gather_selections()
   if #selections == 0 then
     -- This should not happen if keymaps are managed correctly, but as a fallback:
     require('vscode_style').deactivate_selection_keymaps()
-    local keys = vim.api.nvim_replace_termcodes('<BS>', true, false, true)
+    local fallback = direction == 'right' and '<Del>' or '<BS>'
+    local keys = vim.api.nvim_replace_termcodes(fallback, true, false, true)
     vim.api.nvim_feedkeys(keys, 'n', false)
     return
   end
 
   local ok, err = pcall(function()
-    vim.cmd('undojoin')
     delete_selections(selections)
     multi_cursor.sync_cursors()
     collapse_deleted_selections(selections)
@@ -1528,7 +1529,7 @@ function M.delete_selection_and_cleanup()
 end
 
 function M.on_cursor_moved_i()
-  local primary = multi_cursor.primary()
+  local primary = multi_cursor.peek_primary()
   if not (primary and primary.selection) then
     return
   end

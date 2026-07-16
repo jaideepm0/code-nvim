@@ -1,84 +1,114 @@
-# VSCode Style Insert Editing for Neovim
+# VS Code-style insert editing for Neovim
 
-`code-nvim` keeps you in insert mode while borrowing a handful of Visual Studio Code’s core text-editing shortcuts. Hold familiar `Shift`, `Ctrl`, and `Alt` combinations to extend selections, jump to boundaries, and shuffle lines without leaving the flow of typing.
+`code-nvim` implements familiar VS Code editing gestures without making you leave Insert mode. Selections and secondary cursors are simulated with byte-accurate Neovim extmarks, kept separately per buffer, and updated after edits.
 
-## Basic Capabilities
-- Extend selections with `Shift` + arrow keys, or jump straight to line/file boundaries with `Shift+Home/End` and `Ctrl+Shift+Home/End`.
-- Reshape selections word-by-word using `Ctrl+Shift+Left/Right` and clear them instantly when you leave insert mode.
-- Use `Alt+Up/Down` to move the active lines and `Shift+Alt+Up/Down` to duplicate them in place.
-- Remove whole lines instantly with `Ctrl+Shift+K`, matching VS Code’s delete-line shortcut.
-- Press `Tab`/`Shift+Tab` to indent or dedent just the highlighted span, and overwrite any selection simply by typing.
-- Wrap any active selection by typing `'`, `"`, `(`, `{`, `[`, or `<`; the plugin inserts the matching closer automatically.
-- Press `Backspace` to delete whatever you have highlighted without needing to leave insert mode.
+## Features
+
+| Keys | Action |
+| --- | --- |
+| `Shift+Left/Right` | Extend the selection by one UTF-8 character |
+| `Shift+Up/Down` | Extend the selection vertically |
+| `Ctrl+Shift+Left/Right` | Extend by a word or symbol group |
+| `Shift+Home/End` | Extend to the start or end of the line |
+| `Ctrl+Shift+Home/End` | Extend to the start or end of the file |
+| `Alt+Up/Down` | Move the selected/current lines |
+| `Shift+Alt+Up/Down` | Copy the selected/current lines |
+| `Ctrl+Shift+K` | Delete the selected/current lines |
+| `Alt+Click` | Add a secondary cursor |
+| `Ctrl+Alt+Up/Down` | Add cursors above or below |
+| `Ctrl+D` | Select the current word and add its next literal match |
+| `Ctrl+Shift+L` | Select all literal occurrences, including multiline text |
+| `Shift+Alt+Right/Left` | Expand or shrink the selection stack |
+| `Shift+Alt+Drag` | Make a virtual-column-aware box selection |
+| `Tab` / `Shift+Tab` | Indent or dedent selected lines/all cursor lines |
+| `Backspace` / `Delete` | Delete selections or one character at every cursor |
+| `Enter` | Insert a newline at every cursor while preserving leading indent |
+
+Typing replaces every active selection. Typing `'`, `"`, `(`, `{`, `[`, or `<` around a selection inserts the matching closing delimiter. Printable multi-cursor input is queued and coalesced outside `InsertCharPre`, where Neovim's `textlock` prevents direct buffer changes.
 
 ## Installation
-Add the plugin to your preferred manager. With [lazy.nvim](https://github.com/folke/lazy.nvim):
+
+With [lazy.nvim](https://github.com/folke/lazy.nvim):
 
 ```lua
 {
   "jaideepm0/code-nvim",
   config = function()
-    require("vscode_style").setup({
-      -- selection_hl = "Visual",
-      -- max_cursors = 32,
-    })
+    require("vscode_style").setup()
   end,
 }
 ```
 
-For a manual setup, add the repository to `runtimepath` and call:
+For a manual installation, add the repository to `runtimepath` and call:
 
 ```lua
 require("vscode_style").setup()
 ```
 
-Call `setup()` explicitly. This plugin is intentionally non‑opinionated and does not auto‑enable itself; you decide where and when to map keys and which features to enable.
+The plugin never enables itself automatically. Normal-mode mappings are not created.
 
 ## Configuration
-`setup()` with no arguments keeps the built-in defaults and only maps shortcuts that are currently unmapped in insert mode. Drop in a table when you need tweaks:
-
-- `selection_hl` (string\|false) – highlight group for simulated selections; set to `false` to turn highlights off.
-- `max_cursors` (number) – maximum simultaneous cursors (default `32`).
-- `mapping_strategy` (`"respect"`\|`"force"`\|`"skip"`) – whether to reuse your bindings, override them, or install nothing.
-- `feature_flags` / `mappings` – enable/disable whole shortcut groups (`selection`, `line_ops`, `multi_cursor`, `column_selection`, `tab`, `backspace`, `surround`).
-- `autocommands` – opt in/out of helper autocmds (`insert_char_pre`, `insert_leave`, `insert_enter`, `buf_enter`, `buf_cleanup`).
-- `notify` – custom notification function or `false` to stay quiet.
-- `keymaps` – override individual shortcuts (change `lhs`, tweak `opts`/`desc`, disable with `false`, or supply your own `callback`).
-
-Example customisation:
 
 ```lua
 require("vscode_style").setup({
-  selection_hl = "Search",
-  max_cursors = 16,
-  mapping_strategy = "respect", -- use "force" to override or "skip" to install nothing
+  selection_hl = "Visual", -- highlight group, or false
+  cursor_hl = "Cursor", -- secondary-cursor overlay, or false
+  max_cursors = 32,
+  mapping_strategy = "respect", -- "respect", "force", or "skip"
   feature_flags = {
-    tab = false, -- keep native Tab behaviour
+    selection = true,
+    line_ops = true,
+    multi_cursor = true,
+    column_selection = true,
+    tab = true,
     backspace = true,
+    surround = true,
   },
   autocommands = {
-    insert_enter = false, -- opt out of snapshot restore on InsertEnter
+    insert_char_pre = true,
+    insert_leave = true,
+    buf_enter = true,
+    buf_cleanup = true,
+    cursor_moved_i = true,
   },
-  notify = false, -- run quietly
+  notify = vim.notify, -- a function, or false
   keymaps = {
-    move_line_up = { lhs = "<A-k>", desc = "Move line up like VS Code" },
-    backspace_ctrl_h = false, -- disable the Ctrl+h alias
-    add_selection_next = {
-      lhs = { "<C-d>", "<Leader>d" },
+    move_line_up = { lhs = "<A-k>", desc = "Move line up" },
+    add_selection_next = { lhs = { "<C-d>", "<Leader>d" } },
+    backspace = false,
+    select_all_occurrences = {
+      callback = function()
+        -- A complete custom Insert-mode action.
+      end,
     },
   },
 })
 ```
 
-## Notes
-- Designed for Neovim 0.9 or newer; no external dependencies.
-- Behaves best with `set mouse=a` if you plan to use Shift+Alt drags for wider selections.
-- Default mappings are added only when free; use `mapping_strategy = "force"` to override (previous bindings are restored if you disable the plugin later).
-- Backspace interception happens without redefining your keys; if you disable the feature flag the editor reverts to native behaviour immediately.
-- Multi-cursor bindings ship enabled; toggle `feature_flags.multi_cursor = false` if you need a simpler single-cursor setup.
-- Normal mode remains untouched—hit `<Esc>` whenever you want native motions back.
+`mapping_strategy = "respect"` installs only globally free shortcuts (and respects a target buffer-local mapping when `opts.buffer` is used). `"force"` replaces existing mappings and restores them during the next setup or `disable()` call. `"skip"` installs no persistent mappings, which is useful when another layer calls the action functions directly.
+
+Individual keymap overrides accept `false`, a replacement `lhs` string/list, or a table containing `enabled`, `lhs`, `opts`, `desc`, `callback`, `action`, and `args`. Use `require("vscode_style.config").keymap_definitions()` to inspect the supported names.
+
+To remove the plugin's mappings, autocmds, extmarks, and simulated cursors without restarting Neovim:
+
+```lua
+require("vscode_style").disable()
+```
+
+Mappings installed or replaced by another plugin after `setup()` are left untouched during cleanup.
+For statuslines or diagnostics, `get_cursor_count()` returns the active count and `get_cursors()` returns a detached snapshot of the per-buffer cursor state.
+
+## Platform notes and limitations
+
+- Neovim 0.9 or newer is supported; there are no external runtime dependencies.
+- Modifier delivery depends on the UI. GUI clients generally distinguish these chords, while legacy terminals may collapse `Ctrl+Shift+letter` into `Ctrl+letter`. Alt mappings in terminals also depend on escape-sequence timing. A terminal with the Kitty keyboard protocol or a GUI gives the most reliable results.
+- Mouse gestures require `set mouse=a`. Whether `Shift+Alt+Drag` reaches Neovim depends on the terminal/GUI and window manager.
+- Selection expansion uses word, full-line, then indentation-block heuristics. It does not claim syntax-tree parity with VS Code's language-specific smart selection.
+- Printable typing, Backspace/Delete, Enter, and indentation are replicated at secondary cursors. Completion menus, snippets, register insertion, IME composition, and arbitrary third-party insert mappings may still operate only at Neovim's real cursor.
+- Cursor columns are byte offsets internally, as required by Neovim's buffer API, but character movement is UTF-8-safe. Box selection converts virtual screen columns to byte columns, including tabs and wide characters where the host supports `virtcol2col()`.
 
 ## Testing
+
 Run the headless regression suite from the repository root:
 
 ```sh

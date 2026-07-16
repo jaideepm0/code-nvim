@@ -56,6 +56,7 @@ local function fresh_plugin()
     'vscode_style.actions',
     'vscode_style.config',
     'vscode_style.multi_cursor',
+    'vscode_style.util',
   }) do
     package.loaded[name] = nil
   end
@@ -276,6 +277,217 @@ test('Ctrl+Shift+K deletes non-contiguous cursor lines without line-number shift
   env.actions.delete_line()
 
   assert_eq(lines(), { 'two', 'four' }, 'delete-line should remove original lines one and three')
+end)
+
+test('character selections stay on UTF-8 codepoint boundaries', function()
+  local env = setup_buffer({ 'aé🙂b' }, { cursor = { 1, 7 } })
+
+  env.actions.select_character('left')
+
+  local selection = env.multi_cursor.primary().selection
+  assert_eq({ selection.anchor.col, selection.active.col }, { 7, 3 }, 'left should select the entire emoji')
+  assert_eq(
+    vim.api.nvim_buf_get_text(env.bufnr, 0, selection.active.col, 0, selection.anchor.col, {}),
+    { '🙂' },
+    'selection must not split a multibyte character'
+  )
+end)
+
+test('Ctrl+D selects the current Unicode word and its next occurrence', function()
+  local env = setup_buffer({ 'café café' }, { cursor = { 1, 3 } })
+
+  env.actions.add_selection_to_next_match()
+
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 0, col = 5 },
+    { line = 0, col = 11 },
+  }, 'both complete UTF-8 words should be selected')
+  for _, item in ipairs(env.multi_cursor.get_positions()) do
+    assert_true(item.cursor.selection ~= nil, 'every Ctrl+D cursor should own a selection')
+  end
+end)
+
+test('replacing same-line occurrence selections preserves every collapse position', function()
+  local env = setup_buffer({ 'foo foo' }, { cursor = { 1, 1 } })
+  env.actions.select_all_occurrences()
+
+  env.actions.delete_selection_and_cleanup()
+  env.actions.insert_text_at_cursors('X')
+
+  assert_eq(lines(), { 'X X' }, 'both occurrences should be replaced at their transformed positions')
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 0, col = 1 },
+    { line = 0, col = 3 },
+  })
+end)
+
+test('Ctrl+Shift+L supports literal selections spanning lines', function()
+  local env = setup_buffer({
+    'one',
+    'two',
+    'one',
+    'two',
+  }, { cursor = { 2, 3 } })
+  env.multi_cursor.replace_all_cursors({
+    selected_cursor(0, 0, 1, 3, true),
+  })
+
+  env.actions.select_all_occurrences()
+
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 1, col = 3 },
+    { line = 3, col = 3 },
+  }, 'both multiline matches should be selected')
+end)
+
+test('multi-cursor Backspace deletes one complete character at every cursor', function()
+  local env = setup_buffer({ 'aé b🙂' }, { cursor = { 1, 3 } })
+  env.multi_cursor.add_cursor_at(0, 9)
+
+  env.actions.handle_backspace()
+
+  assert_eq(lines(), { 'a b' })
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 0, col = 1 },
+    { line = 0, col = 3 },
+  })
+end)
+
+test('multi-cursor Enter preserves each line indentation', function()
+  local env = setup_buffer({ '  aa', '\tb' }, { cursor = { 1, 3 } })
+  env.multi_cursor.add_cursor_at(1, 2)
+
+  env.actions.handle_enter()
+
+  assert_eq(lines(), { '  a', '  a', '\tb', '\t' })
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 1, col = 2 },
+    { line = 3, col = 1 },
+  })
+end)
+
+test('copy-line handles multiple disjoint ranges without shifted source indices', function()
+  local env = setup_buffer({ 'a', 'b', 'c', 'd' }, { cursor = { 2, 0 } })
+  env.multi_cursor.add_cursor_at(3, 0)
+
+  env.actions.copy_line('up')
+
+  assert_eq(lines(), { 'a', 'b', 'b', 'c', 'd', 'd' })
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 1, col = 0 },
+    { line = 4, col = 0 },
+  })
+end)
+
+test('move-line merges adjacent cursor lines into one stable block', function()
+  local env = setup_buffer({ 'a', 'b', 'c', 'd' }, { cursor = { 2, 0 } })
+  env.multi_cursor.add_cursor_at(2, 0)
+
+  env.actions.move_line('up')
+
+  assert_eq(lines(), { 'b', 'c', 'a', 'd' })
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 0, col = 0 },
+    { line = 1, col = 0 },
+  })
+end)
+
+test('move-line keeps exclusive full-line selection endpoints attached to the block', function()
+  local env = setup_buffer({ 'a', 'b', 'c', 'd' }, { cursor = { 4, 0 } })
+  env.multi_cursor.replace_all_cursors({
+    selected_cursor(1, 0, 3, 0, true),
+  })
+
+  env.actions.move_line('up')
+
+  assert_eq(lines(), { 'b', 'c', 'a', 'd' })
+  local selection = env.multi_cursor.primary().selection
+  assert_eq({ selection.anchor.line, selection.active.line }, { 0, 2 })
+  assert_eq(cursor_positions(env.multi_cursor), { { line = 2, col = 0 } })
+end)
+
+test('multi-cursor state is isolated and retained per buffer', function()
+  local env = setup_buffer({ 'alpha', 'beta' }, { cursor = { 1, 1 } })
+  env.multi_cursor.add_cursor_at(1, 1)
+  local first_buf = env.bufnr
+  vim.bo[first_buf].bufhidden = 'hide'
+
+  local second_buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(second_buf)
+  vim.api.nvim_buf_set_lines(second_buf, 0, -1, false, { 'other' })
+  vim.api.nvim_win_set_cursor(0, { 1, 0 })
+  assert_eq(#env.multi_cursor.iter(), 1, 'second buffer should start with only its primary cursor')
+
+  vim.api.nvim_set_current_buf(first_buf)
+  vim.api.nvim_win_set_cursor(0, { 1, 1 })
+  assert_eq(#env.multi_cursor.iter(), 2, 'first buffer cursors should not be discarded by a buffer switch')
+end)
+
+test('secondary cursors have a visible extmark overlay', function()
+  local env = setup_buffer({ 'alpha' }, { cursor = { 1, 1 } })
+  local secondary = env.multi_cursor.add_cursor_at(0, 3)
+  local details = vim.api.nvim_buf_get_extmark_by_id(
+    env.bufnr,
+    env.plugin.get_state().ns,
+    secondary.id,
+    { details = true }
+  )[3]
+
+  assert_eq(details.virt_text[1][2], 'Cursor')
+  assert_eq(details.virt_text_pos, 'overlay')
+end)
+
+test('disable does not delete a mapping replaced by the user after setup', function()
+  local plugin = fresh_plugin()
+  plugin.setup({
+    mapping_strategy = 'force',
+    notify = false,
+    keymaps = {
+      move_line_up = { lhs = '<F22>', desc = 'plugin-map' },
+    },
+  })
+  vim.keymap.set('i', '<F22>', '<C-o>:let g:vscode_style_user_map = 1<CR>', { desc = 'user-map' })
+
+  plugin.disable()
+
+  local map
+  for _, candidate in ipairs(vim.api.nvim_get_keymap('i')) do
+    if candidate.lhs == '<F22>' then
+      map = candidate
+      break
+    end
+  end
+  assert_eq(map and map.desc, 'user-map', 'teardown should preserve a newer user mapping')
+  pcall(vim.keymap.del, 'i', '<F22>')
+end)
+
+test('disable removes modifier-order-normalized default mappings', function()
+  local plugin = fresh_plugin()
+  plugin.setup({ mapping_strategy = 'force', notify = false })
+  assert_true(vim.fn.maparg('<M-S-Up>', 'i') ~= '', 'copy-line mapping should be installed')
+
+  plugin.disable()
+
+  assert_eq(vim.fn.maparg('<M-S-Up>', 'i'), '', 'canonicalized Alt+Shift mapping should be removed')
+  assert_eq(vim.fn.maparg('<CR>', 'i'), '', 'plugin newline mapping should be removed')
+end)
+
+test('setup tolerates a non-table configuration value', function()
+  local plugin = fresh_plugin()
+  plugin.setup('invalid configuration')
+  assert_eq(plugin.get_state().config.max_cursors, 32)
+  plugin.disable()
+end)
+
+test('select-all occurrence scanning respects max_cursors', function()
+  local env = setup_buffer({ string.rep('x ', 200) }, {
+    cursor = { 1, 0 },
+    config = { max_cursors = 7 },
+  })
+
+  env.actions.select_all_occurrences()
+
+  assert_eq(#env.multi_cursor.get_positions(), 7, 'large match sets should be capped during collection')
 end)
 
 local failures = {}
