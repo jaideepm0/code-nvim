@@ -270,6 +270,72 @@ local defaults = {
   notify = vim.notify,
 }
 
+local aggressive_defaults = {
+  enabled = false,
+  auto_insert = true,
+  terminal_startinsert = true,
+  allow_floating = false,
+  mapping_strategy = 'respect',
+  clipboard_register = '+',
+  exclude_buftypes = { 'acwrite', 'help', 'nofile', 'nowrite', 'prompt', 'quickfix', 'terminal' },
+  exclude_filetypes = {
+    'DressingInput',
+    'NvimTree',
+    'TelescopePrompt',
+    'alpha',
+    'dashboard',
+    'lazy',
+    'mason',
+    'neo-tree',
+    'notify',
+    'oil',
+  },
+}
+
+local function normalize_string_list(value, fallback)
+  if type(value) ~= 'table' then
+    return vim.deepcopy(fallback)
+  end
+  local result, seen = {}, {}
+  for _, entry in ipairs(value) do
+    if type(entry) == 'string' and entry ~= '' and not seen[entry] then
+      seen[entry] = true
+      result[#result + 1] = entry
+    end
+  end
+  return result
+end
+
+local function normalize_aggressive(value)
+  local cfg = vim.deepcopy(aggressive_defaults)
+  if value == true then
+    cfg.enabled = true
+    return cfg
+  end
+  if type(value) ~= 'table' then
+    return cfg
+  end
+
+  -- Supplying an options table is itself an opt-in unless explicitly disabled.
+  cfg.enabled = value.enabled ~= false
+  for _, key in ipairs({ 'auto_insert', 'terminal_startinsert', 'allow_floating' }) do
+    if value[key] ~= nil then
+      cfg[key] = not not value[key]
+    end
+  end
+  if value.mapping_strategy == 'force' or value.mapping_strategy == 'respect' then
+    cfg.mapping_strategy = value.mapping_strategy
+  end
+  if type(value.clipboard_register) == 'string' and value.clipboard_register ~= '' then
+    cfg.clipboard_register = value.clipboard_register
+  end
+  cfg.exclude_buftypes = normalize_string_list(value.exclude_buftypes, aggressive_defaults.exclude_buftypes)
+  cfg.exclude_filetypes = normalize_string_list(value.exclude_filetypes, aggressive_defaults.exclude_filetypes)
+  cfg.should_attach = type(value.should_attach) == 'function' and value.should_attach or nil
+  cfg.keymaps = type(value.keymaps) == 'table' and vim.deepcopy(value.keymaps) or {}
+  return cfg
+end
+
 local function normalize_feature_flags(mappings, feature_flags)
   local flags = vim.deepcopy(default_feature_flags)
   local function apply(tbl)
@@ -421,6 +487,7 @@ function M.normalize(user_config)
   cfg.feature_flags = normalize_feature_flags(user_config.mappings, user_config.feature_flags)
   cfg.autocommands = normalize_autocommands(user_config.autocommands)
   cfg.notify = normalize_notify(user_config.notify)
+  cfg.aggressive = normalize_aggressive(user_config.aggressive)
 
   local overrides = user_config.keymaps
   if overrides == nil and type(user_config.mappings) == 'table' then

@@ -47,6 +47,48 @@ require("vscode_style").setup()
 
 The plugin never enables itself automatically. Normal-mode mappings are not created.
 
+## Aggressive mode
+
+Aggressive mode turns an ordinary editable buffer into a persistent, non-modal editing surface. It enters Insert mode when an editor window gains focus, keeps normal movement and editing keys working at every simulated cursor, and re-enters Insert mode if an editor action temporarily leaves it.
+
+```lua
+require("vscode_style").setup({
+  aggressive = true,
+})
+```
+
+In addition to the selection and multi-cursor bindings above, aggressive mode provides these Insert-mode bindings:
+
+| Keys | Action |
+| --- | --- |
+| `Left/Right/Up/Down`, `Home/End` | Move every cursor or collapse every selection |
+| `Ctrl+Left/Right`, `Ctrl+Home/End` | Move by word or file boundary |
+| `Ctrl+Backspace/Delete` | Delete a word at every cursor |
+| `Ctrl+A/C/X/V` | Select all, copy, cut, or paste |
+| `Ctrl+Z`, `Ctrl+Y` / `Ctrl+Shift+Z` | Undo or redo |
+| `Ctrl+U` | Undo the last multi-cursor or selection operation |
+| `Ctrl+S`, `Ctrl+F` | Save or enter Neovim's search command line |
+| `Ctrl+PageUp/PageDown` | Switch buffers |
+| `Click` | Move the primary cursor and clear secondary cursors |
+| `Esc` | Dismiss completion/snippets, selections, or secondary cursors without leaving Insert mode |
+| `Ctrl+Alt+Esc` | Suspend aggressive mode for the buffer and return to regular Neovim |
+
+The controller deliberately does not attach editing mappings to terminal, prompt, help, quickfix, `nofile`, read-only, or floating UI buffers. Terminal buffers are put into terminal-input mode, and returning to an eligible file buffer restores the non-modal editing experience. Buffer-local mappings from completion engines, snippets, and other plugins win by default.
+
+Repeated `Ctrl+D` wraps through unmatched literal occurrences. `Ctrl+U` walks back the bounded cursor-state history without undoing buffer text. Copying several selections also records their individual payloads, so a paste with the same number of cursors restores each selection one-for-one; external clipboard text continues to paste identically at every cursor.
+
+Runtime controls are available as both Lua functions and commands:
+
+```lua
+local vscode = require("vscode_style")
+vscode.enable_aggressive_mode()
+vscode.disable_aggressive_mode()
+vscode.suspend_aggressive_mode() -- current buffer only
+vscode.resume_aggressive_mode()
+```
+
+The corresponding commands are `:VscodeStyleAggressiveEnable`, `:VscodeStyleAggressiveDisable`, `:VscodeStyleAggressiveToggle`, `:VscodeStyleAggressiveSuspend`, and `:VscodeStyleAggressiveResume`. `is_aggressive_mode()` and `is_aggressive_buffer()` can be used in a statusline. Mode changes emit the `User VscodeStyleAggressiveModeChanged` event.
+
 ## Configuration
 
 ```lua
@@ -72,6 +114,24 @@ require("vscode_style").setup({
     cursor_moved_i = true,
   },
   notify = vim.notify, -- a function, or false
+  aggressive = {
+    enabled = true,
+    auto_insert = true,
+    terminal_startinsert = true,
+    mapping_strategy = "respect", -- or "force", scoped per eligible buffer
+    clipboard_register = "+",
+    allow_floating = false,
+    exclude_buftypes = { "nofile", "prompt", "quickfix", "terminal" },
+    exclude_filetypes = { "TelescopePrompt", "lazy", "neo-tree" },
+    should_attach = function(bufnr, winid)
+      -- Return true/false to decide, or nil to keep the default decision.
+    end,
+    keymaps = {
+      save = { lhs = "<C-s>" },
+      suspend = { lhs = "<C-M-Esc>" },
+      find = false,
+    },
+  },
   keymaps = {
     move_line_up = { lhs = "<A-k>", desc = "Move line up" },
     add_selection_next = { lhs = { "<C-d>", "<Leader>d" } },
@@ -89,6 +149,8 @@ require("vscode_style").setup({
 
 Individual keymap overrides accept `false`, a replacement `lhs` string/list, or a table containing `enabled`, `lhs`, `opts`, `desc`, `callback`, `action`, and `args`. Use `require("vscode_style.config").keymap_definitions()` to inspect the supported names.
 
+Aggressive keymap overrides use the same `false`, string/list, or `{ enabled, lhs, desc, callback, action, args }` forms under `aggressive.keymaps`. Set `vim.b.vscode_style_aggressive_disable = true` to exclude one buffer, or `vim.b.vscode_style_aggressive_enable = true` to opt a special buffer in. The `respect` strategy never replaces an existing buffer-local or global Insert-mode mapping. The `force` strategy restores displaced buffer-local mappings when aggressive mode detaches, as long as another plugin has not replaced the aggressive mapping in the meantime.
+
 To remove the plugin's mappings, autocmds, extmarks, and simulated cursors without restarting Neovim:
 
 ```lua
@@ -102,6 +164,7 @@ For statuslines or diagnostics, `get_cursor_count()` returns the active count an
 
 - Neovim 0.9 or newer is supported; there are no external runtime dependencies.
 - Modifier delivery depends on the UI. GUI clients generally distinguish these chords, while legacy terminals may collapse `Ctrl+Shift+letter` into `Ctrl+letter`. Alt mappings in terminals also depend on escape-sequence timing. A terminal with the Kitty keyboard protocol or a GUI gives the most reliable results.
+- Aggressive mode does not simulate cursors inside a terminal emulator or plugin prompt. It yields those buffers to their owning UI and resumes editing when focus returns to a file buffer.
 - Mouse gestures require `set mouse=a`. Whether `Shift+Alt+Drag` reaches Neovim depends on the terminal/GUI and window manager.
 - Selection expansion uses word, full-line, then indentation-block heuristics. It does not claim syntax-tree parity with VS Code's language-specific smart selection.
 - Printable typing, Backspace/Delete, Enter, and indentation are replicated at secondary cursors. Completion menus, snippets, register insertion, IME composition, and arbitrary third-party insert mappings may still operate only at Neovim's real cursor.
