@@ -652,18 +652,47 @@ end
 
 function M.save_snapshot()
   state.snapshots = state.snapshots or {}
-  state.snapshots[current_buf()] = M.snapshot()
+  local bufnr = current_buf()
+  local stack = state.snapshots[bufnr]
+  if type(stack) ~= 'table' then
+    stack = {}
+    state.snapshots[bufnr] = stack
+  end
+  stack[#stack + 1] = M.snapshot()
+  local limit = math.max(1, (state.config and state.config.max_cursors) or 32)
+  if #stack > limit then
+    table.remove(stack, 1)
+  end
 end
 
 function M.restore_snapshot()
   state.snapshots = state.snapshots or {}
-  local snapshot = state.snapshots[current_buf()]
+  local bufnr = current_buf()
+  local stack = state.snapshots[bufnr]
+  local snapshot = type(stack) == 'table' and table.remove(stack) or nil
+  if stack and #stack == 0 then
+    state.snapshots[bufnr] = nil
+  end
   if snapshot and #snapshot > 0 then
     M.replace_all_cursors(vim.deepcopy(snapshot))
     M.update_highlights()
     return true
   end
   return false
+end
+
+function M.discard_snapshot()
+  if not (state and state.snapshots) then
+    return
+  end
+  local bufnr = current_buf()
+  local stack = state.snapshots[bufnr]
+  if type(stack) == 'table' then
+    table.remove(stack)
+    if #stack == 0 then
+      state.snapshots[bufnr] = nil
+    end
+  end
 end
 
 function M.clear_snapshot()

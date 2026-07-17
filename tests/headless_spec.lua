@@ -54,6 +54,7 @@ local function fresh_plugin()
   for _, name in ipairs({
     'vscode_style',
     'vscode_style.actions',
+    'vscode_style.aggressive',
     'vscode_style.config',
     'vscode_style.multi_cursor',
     'vscode_style.util',
@@ -145,6 +146,22 @@ test('Ctrl+D can add the next selected punctuation match without inventing backs
   }, 'second selected range should be the next exact a[b]')
 end)
 
+test('Ctrl+D wraps to the first unmatched occurrence', function()
+  local env = setup_buffer({ 'foo foo foo tail' }, { cursor = { 1, 11 } })
+  env.multi_cursor.replace_all_cursors({
+    selected_cursor(0, 8, 0, 11, true),
+  })
+
+  env.actions.add_selection_to_next_match()
+
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 0, col = 3 },
+    { line = 0, col = 11 },
+  })
+  local first = env.multi_cursor.get_positions()[1].cursor.selection
+  assert_eq({ first.anchor.col, first.active.col }, { 0, 3 })
+end)
+
 test('typing with same-line multi-cursors leaves every cursor after its own inserted text', function()
   local env = setup_buffer({ 'abcdefghi' }, { cursor = { 1, 3 } })
   env.multi_cursor.add_cursor_at(0, 6)
@@ -157,6 +174,19 @@ test('typing with same-line multi-cursors leaves every cursor after its own inse
     { line = 0, col = 4 },
     { line = 0, col = 8 },
   }, 'same-line cursor columns should include earlier insert offsets')
+end)
+
+test('one undo reverses an entire multi-cursor insertion', function()
+  local env = setup_buffer({ 'abcdef' }, { cursor = { 1, 1 } })
+  -- Establish the fixture as an undoable baseline before the operation under test.
+  vim.cmd('silent undo')
+  vim.cmd('silent redo')
+  env.multi_cursor.add_cursor_at(0, 4)
+  env.actions.insert_text_at_cursors('X')
+
+  vim.cmd('silent undo')
+
+  assert_eq(lines(), { 'abcdef' }, 'multi-cursor edits should share an undo transaction')
 end)
 
 test('temporary selection delete keymaps are activated per buffer, not by one global latch', function()
@@ -488,6 +518,192 @@ test('select-all occurrence scanning respects max_cursors', function()
   env.actions.select_all_occurrences()
 
   assert_eq(#env.multi_cursor.get_positions(), 7, 'large match sets should be capped during collection')
+end)
+
+test('aggressive mode attaches ordinary Insert-mode shortcuts only to editable file buffers', function()
+  local plugin = fresh_plugin()
+  local file_buf = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(file_buf)
+  vim.api.nvim_buf_set_lines(file_buf, 0, -1, false, { 'editable' })
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = { enabled = true, auto_insert = false, terminal_startinsert = false },
+  })
+
+  assert_true(get_buf_map(file_buf, '<Left>'), 'editable file buffer should receive aggressive navigation')
+  assert_true(get_buf_map(file_buf, '<C-A>'), 'editable file buffer should receive select-all')
+  assert_true(plugin.is_aggressive_mode(), 'aggressive controller should report enabled')
+  assert_true(plugin.is_aggressive_buffer(file_buf), 'file buffer should report active')
+
+  local ui_buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[ui_buf].buftype = 'nofile'
+  vim.api.nvim_set_current_buf(ui_buf)
+  vim.api.nvim_exec_autocmds('BufEnter', { buffer = ui_buf })
+  assert_eq(get_buf_map(ui_buf, '<Left>'), nil, 'nofile UI should not receive aggressive mappings')
+  assert_true(not plugin.is_aggressive_buffer(ui_buf), 'nofile UI should not report active')
+
+  plugin.disable()
+end)
+
+test('aggressive respect strategy leaves plugin mappings untouched', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha' })
+  vim.keymap.set('i', '<C-s>', '<C-o>:let g:vscode_style_existing_save = 1<CR>', {
+    buffer = bufnr,
+    desc = 'existing-save',
+  })
+
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = { enabled = true, auto_insert = false },
+  })
+
+  assert_eq(get_buf_map(bufnr, '<C-S>').desc, 'existing-save')
+  plugin.disable()
+  assert_eq(get_buf_map(bufnr, '<C-S>').desc, 'existing-save', 'existing mapping should survive teardown')
+  cleanup_buf_maps(bufnr, { '<C-s>' })
+end)
+
+test('aggressive force strategy restores a displaced buffer mapping', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha' })
+  vim.keymap.set('i', '<F23>', '<C-o>:let g:vscode_style_original_f23 = 1<CR>', {
+    buffer = bufnr,
+    desc = 'original-f23',
+  })
+
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = {
+      enabled = true,
+      auto_insert = false,
+      mapping_strategy = 'force',
+      keymaps = { save = { lhs = '<F23>', desc = 'aggressive-save' } },
+    },
+  })
+
+  assert_eq(get_buf_map(bufnr, '<F23>').desc, 'VS Code aggressive: aggressive-save')
+  plugin.disable_aggressive_mode()
+  assert_eq(get_buf_map(bufnr, '<F23>').desc, 'original-f23')
+  cleanup_buf_maps(bufnr, { '<F23>' })
+  plugin.disable()
+end)
+
+test('aggressive buffers can be suspended and resumed without touching core state', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha' })
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = { enabled = true, auto_insert = false },
+  })
+
+  plugin.suspend_aggressive_mode(bufnr)
+  assert_eq(get_buf_map(bufnr, '<Left>'), nil)
+  assert_true(not plugin.is_aggressive_buffer(bufnr))
+
+  plugin.resume_aggressive_mode(bufnr)
+  assert_true(get_buf_map(bufnr, '<Left>'))
+  assert_true(plugin.is_aggressive_buffer(bufnr))
+  plugin.disable()
+end)
+
+test('Ctrl+U walks back cursor additions without undoing text', function()
+  local env = setup_buffer({ 'one', 'two', 'three' }, { cursor = { 1, 0 } })
+  env.actions.add_cursor_vertical('down')
+  env.actions.add_cursor_vertical('down')
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 0, col = 0 },
+    { line = 1, col = 0 },
+    { line = 2, col = 0 },
+  })
+
+  assert_true(env.actions.undo_cursor_state())
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 0, col = 0 },
+    { line = 1, col = 0 },
+  })
+  assert_true(env.actions.undo_cursor_state())
+  assert_eq(cursor_positions(env.multi_cursor), { { line = 0, col = 0 } })
+  assert_eq(lines(), { 'one', 'two', 'three' })
+end)
+
+test('aggressive cursor movement operates on every cursor and collapses selections', function()
+  local env = setup_buffer({ 'abcdef' }, { cursor = { 1, 1 } })
+  env.multi_cursor.add_cursor_at(0, 4)
+  env.actions.move_cursor('character', 'right')
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 0, col = 2 },
+    { line = 0, col = 5 },
+  })
+
+  env.multi_cursor.for_each(function(cursor)
+    env.multi_cursor.set_selection(cursor, { line = 0, col = cursor.col - 1 }, { line = 0, col = cursor.col })
+  end)
+  env.actions.move_cursor('character', 'left')
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 0, col = 1 },
+    { line = 0, col = 4 },
+  }, 'left should collapse each selection to its own start')
+end)
+
+test('aggressive paste replaces every active selection from a regular register', function()
+  local env = setup_buffer({ 'foo foo' }, {
+    cursor = { 1, 3 },
+    config = { aggressive = { enabled = false, clipboard_register = '"' } },
+  })
+  env.multi_cursor.replace_all_cursors({
+    selected_cursor(0, 0, 0, 3, true),
+    selected_cursor(0, 4, 0, 7, false),
+  })
+  vim.fn.setreg('"', 'X', 'v')
+
+  env.actions.paste()
+
+  assert_eq(lines(), { 'X X' })
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 0, col = 1 },
+    { line = 0, col = 3 },
+  })
+end)
+
+test('multi-selection clipboard payload pastes one-to-one at matching cursors', function()
+  local env = setup_buffer({ 'aa bb' }, {
+    cursor = { 1, 2 },
+    config = { aggressive = { enabled = false, clipboard_register = '"' } },
+  })
+  env.multi_cursor.replace_all_cursors({
+    selected_cursor(0, 0, 0, 2, true),
+    selected_cursor(0, 3, 0, 5, false),
+  })
+
+  env.actions.copy(true)
+  assert_eq(lines(), { ' ' })
+  env.actions.paste()
+
+  assert_eq(lines(), { 'aa bb' })
+end)
+
+test('aggressive linewise paste preserves copied-line semantics', function()
+  local env = setup_buffer({ 'one', 'two' }, {
+    cursor = { 2, 1 },
+    config = { aggressive = { enabled = false, clipboard_register = '"' } },
+  })
+  vim.fn.setreg('"', { 'copied' }, 'V')
+
+  env.actions.paste()
+
+  assert_eq(lines(), { 'one', 'copied', 'two' })
+  assert_eq(cursor_positions(env.multi_cursor), { { line = 2, col = 1 } })
 end)
 
 local failures = {}

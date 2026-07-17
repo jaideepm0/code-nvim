@@ -1,6 +1,7 @@
 local config_module = require('vscode_style.config')
 local actions = require('vscode_style.actions')
 local multi_cursor = require('vscode_style.multi_cursor')
+local aggressive = require('vscode_style.aggressive')
 
 local M = {}
 
@@ -176,6 +177,19 @@ local function make_action_callback(spec)
   end
 end
 
+local function scoped_action_callback(callback, lhs)
+  return function()
+    -- Aggressive mode deliberately yields in prompt, terminal, floating, and
+    -- other excluded UI buffers even though the core mappings are global.
+    if aggressive.is_enabled() and not aggressive.is_active(vim.api.nvim_get_current_buf()) then
+      local keys = vim.api.nvim_replace_termcodes(lhs, true, false, true)
+      vim.api.nvim_feedkeys(keys, 'n', false)
+      return
+    end
+    return callback()
+  end
+end
+
 local function apply_keymaps()
   clear_keymaps()
 
@@ -189,9 +203,10 @@ local function apply_keymaps()
   for _, name in ipairs(state.config.keymap_order) do
     local spec = state.config.keymaps[name]
     if spec and spec.enabled then
-      local callback = make_action_callback(spec)
-      if callback then
+      local action_callback = make_action_callback(spec)
+      if action_callback then
         for _, lhs in ipairs(spec.lhs) do
+          local callback = scoped_action_callback(action_callback, lhs)
           local identity = canonical_lhs(lhs)
           if seen[identity] then
             notify(
@@ -306,6 +321,7 @@ local function setup_autocommands()
 end
 
 function M.setup(user_config)
+  aggressive.teardown()
   local active_buffers = vim.tbl_keys(selection_keymaps_active)
   for _, bufnr in ipairs(active_buffers) do
     M.deactivate_selection_keymaps(bufnr)
@@ -324,6 +340,7 @@ function M.setup(user_config)
   state.buffer_states = {}
   state.snapshots = {}
   state.pending_inserts = {}
+  state.clipboard_payload = nil
   state.column_selecting = false
   state.column_anchor = nil
 
@@ -332,6 +349,7 @@ function M.setup(user_config)
 
   setup_autocommands()
   apply_keymaps()
+  aggressive.setup(state, actions)
 end
 
 function M.get_state()
@@ -344,6 +362,34 @@ end
 
 function M.get_cursor_count()
   return #multi_cursor.iter()
+end
+
+function M.enable_aggressive_mode()
+  aggressive.enable()
+end
+
+function M.disable_aggressive_mode()
+  aggressive.disable()
+end
+
+function M.toggle_aggressive_mode()
+  aggressive.toggle()
+end
+
+function M.suspend_aggressive_mode(bufnr)
+  aggressive.suspend(bufnr)
+end
+
+function M.resume_aggressive_mode(bufnr)
+  aggressive.resume(bufnr)
+end
+
+function M.is_aggressive_mode()
+  return aggressive.is_enabled()
+end
+
+function M.is_aggressive_buffer(bufnr)
+  return aggressive.is_active(bufnr)
 end
 
 local function set_selection_delete_keymap(bufnr, lhs)
@@ -411,6 +457,7 @@ function M.deactivate_selection_keymaps(bufnr)
 end
 
 function M.disable()
+  aggressive.teardown()
   local active_buffers = vim.tbl_keys(selection_keymaps_active)
   for _, bufnr in ipairs(active_buffers) do
     M.deactivate_selection_keymaps(bufnr)
@@ -422,6 +469,7 @@ function M.disable()
   end
   multi_cursor.teardown()
   state.pending_inserts = {}
+  state.clipboard_payload = nil
   state.column_selecting = false
   state.column_anchor = nil
 end
