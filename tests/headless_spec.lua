@@ -51,6 +51,19 @@ local function cleanup_buf_maps(bufnr, lhses)
 end
 
 local function fresh_plugin()
+  local loaded = package.loaded['vscode_style']
+  if type(loaded) == 'table' and type(loaded.disable) == 'function' then
+    pcall(loaded.disable)
+  end
+  for _, command in ipairs({
+    'VscodeStyleAggressiveEnable',
+    'VscodeStyleAggressiveDisable',
+    'VscodeStyleAggressiveToggle',
+    'VscodeStyleAggressiveSuspend',
+    'VscodeStyleAggressiveResume',
+  }) do
+    pcall(vim.api.nvim_del_user_command, command)
+  end
   for _, name in ipairs({
     'vscode_style',
     'vscode_style.actions',
@@ -637,6 +650,29 @@ test('Ctrl+U walks back cursor additions without undoing text', function()
   assert_eq(lines(), { 'one', 'two', 'three' })
 end)
 
+test('external text changes invalidate raw cursor-history positions', function()
+  local env = setup_buffer({ 'one', 'two' }, { cursor = { 1, 0 } })
+  env.actions.add_cursor_vertical('down')
+  vim.api.nvim_buf_set_lines(env.bufnr, 0, 0, false, { 'inserted externally' })
+  vim.api.nvim_exec_autocmds('TextChanged', { buffer = env.bufnr })
+
+  assert_true(not env.actions.undo_cursor_state())
+  assert_eq(#env.multi_cursor.iter(), 2)
+end)
+
+test('empty cursor-history stacks are harmless and cleaned up', function()
+  local env = setup_buffer({ 'one' }, { cursor = { 1, 0 } })
+  local snapshots = env.plugin.get_state().snapshots
+  snapshots[env.bufnr] = {}
+
+  assert_true(not env.multi_cursor.restore_snapshot())
+  assert_eq(snapshots[env.bufnr], nil)
+
+  snapshots[env.bufnr] = {}
+  env.multi_cursor.discard_snapshot()
+  assert_eq(snapshots[env.bufnr], nil)
+end)
+
 test('aggressive cursor movement operates on every cursor and collapses selections', function()
   local env = setup_buffer({ 'abcdef' }, { cursor = { 1, 1 } })
   env.multi_cursor.add_cursor_at(0, 4)
@@ -704,6 +740,115 @@ test('aggressive linewise paste preserves copied-line semantics', function()
 
   assert_eq(lines(), { 'one', 'copied', 'two' })
   assert_eq(cursor_positions(env.multi_cursor), { { line = 2, col = 1 } })
+end)
+
+test('aggressive should_attach can explicitly opt an excluded buffer in', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'special editor' })
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = {
+      enabled = true,
+      auto_insert = false,
+      should_attach = function(candidate)
+        return candidate == bufnr
+      end,
+    },
+  })
+
+  assert_true(plugin.is_aggressive_buffer(bufnr))
+  assert_true(get_buf_map(bufnr, '<Left>'))
+  plugin.disable()
+end)
+
+test('aggressive action override replaces a definition built-in callback', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha' })
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = {
+      enabled = true,
+      auto_insert = false,
+      keymaps = { save = { lhs = '<F24>', action = 'select_all' } },
+    },
+  })
+
+  local map = get_buf_map(bufnr, '<F24>')
+  assert_true(map and type(map.callback) == 'function')
+  map.callback()
+  assert_true(require('vscode_style.multi_cursor').primary().selection ~= nil)
+  plugin.disable()
+end)
+
+test('aggressive movement merges cursors that converge at one position', function()
+  local env = setup_buffer({ 'abcde' }, { cursor = { 1, 4 } })
+  env.multi_cursor.add_cursor_at(0, 5)
+
+  env.actions.move_cursor('character', 'right')
+
+  assert_eq(cursor_positions(env.multi_cursor), { { line = 0, col = 5 } })
+  env.actions.insert_text_at_cursors('X')
+  local _, insertions = lines()[1]:gsub('X', '')
+  assert_eq(insertions, 1, 'converged cursors must apply the next edit only once')
+end)
+
+test('aggressive mode attaches when a current buffer becomes editable', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.bo[bufnr].readonly = true
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = { enabled = true, auto_insert = false },
+  })
+  assert_eq(get_buf_map(bufnr, '<Left>'), nil)
+
+  vim.bo[bufnr].readonly = false
+  vim.api.nvim_exec_autocmds('OptionSet', { pattern = 'readonly' })
+
+  assert_true(get_buf_map(bufnr, '<Left>'))
+  vim.bo[bufnr].readonly = true
+  vim.api.nvim_exec_autocmds('OptionSet', { pattern = 'readonly' })
+  assert_eq(get_buf_map(bufnr, '<Left>'), nil)
+  plugin.disable()
+end)
+
+test('aggressive commands do not overwrite commands owned by another plugin', function()
+  local plugin = fresh_plugin()
+  vim.g.vscode_style_foreign_command = nil
+  vim.api.nvim_create_user_command('VscodeStyleAggressiveEnable', function()
+    vim.g.vscode_style_foreign_command = true
+  end, {})
+
+  plugin.setup({ mapping_strategy = 'skip', notify = false })
+  plugin.disable()
+  vim.cmd('VscodeStyleAggressiveEnable')
+
+  assert_true(vim.g.vscode_style_foreign_command)
+  pcall(vim.api.nvim_del_user_command, 'VscodeStyleAggressiveEnable')
+end)
+
+test('aggressive teardown preserves a command replaced after setup', function()
+  local plugin = fresh_plugin()
+  plugin.setup({ mapping_strategy = 'skip', notify = false })
+  vim.api.nvim_del_user_command('VscodeStyleAggressiveEnable')
+  vim.g.vscode_style_replaced_command = nil
+  vim.api.nvim_create_user_command('VscodeStyleAggressiveEnable', function()
+    vim.g.vscode_style_replaced_command = true
+  end, {})
+
+  plugin.disable()
+  vim.cmd('VscodeStyleAggressiveEnable')
+
+  assert_true(vim.g.vscode_style_replaced_command)
+  pcall(vim.api.nvim_del_user_command, 'VscodeStyleAggressiveEnable')
 end)
 
 local failures = {}

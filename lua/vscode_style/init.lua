@@ -318,6 +318,18 @@ local function setup_autocommands()
     })
   end
 
+  if state.config.autocommands.text_changed then
+    vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, {
+      group = state.autocmd_group,
+      callback = function(args)
+        -- Cursor-history snapshots contain byte positions, not extmarks. Any
+        -- edit outside the cursor operations that created them makes them
+        -- unsafe to restore.
+        multi_cursor.clear_snapshot(args.buf)
+      end,
+    })
+  end
+
 end
 
 function M.setup(user_config)

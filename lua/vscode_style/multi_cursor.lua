@@ -116,6 +116,14 @@ local function delete_highlight(cursor)
   end
 end
 
+local function delete_cursor_marks(cursor)
+  delete_highlight(cursor)
+  local bufnr = cursor.bufnr or buf()
+  if cursor.id and vim.api.nvim_buf_is_valid(bufnr) then
+    pcall(vim.api.nvim_buf_del_extmark, bufnr, state.ns, cursor.id)
+  end
+end
+
 local function sanitize_position(pos)
   local buf_handle = buf()
   local total_lines = vim.api.nvim_buf_line_count(buf_handle)
@@ -380,6 +388,48 @@ function M.refresh_from_extmarks()
   end
 end
 
+-- Cursor movement and overlapping deletions can make two unselected cursors
+-- converge. Keep one logical cursor at that point so the next edit is not
+-- applied twice. Selected cursors are retained because equal active endpoints
+-- can still describe distinct ranges.
+function M.dedupe()
+  ensure_namespace()
+  M.switch_buffer()
+  if #state.cursors < 2 then
+    return 0
+  end
+  sort_cursors()
+  local result, seen = {}, {}
+  local removed = 0
+  for _, cursor in ipairs(state.cursors) do
+    local key = string.format('%d:%d', cursor.line, cursor.col)
+    local duplicate = not cursor.selection and seen[key]
+    if not duplicate or duplicate.cursor.selection then
+      result[#result + 1] = cursor
+      if not cursor.selection then
+        seen[key] = { cursor = cursor, index = #result }
+      end
+    elseif cursor.is_primary and not duplicate.cursor.is_primary then
+      delete_cursor_marks(duplicate.cursor)
+      result[duplicate.index] = cursor
+      seen[key] = { cursor = cursor, index = duplicate.index }
+      removed = removed + 1
+    else
+      delete_cursor_marks(cursor)
+      removed = removed + 1
+    end
+  end
+  if removed > 0 then
+    state.cursors = result
+    if state.buffer_states and state.current_buf then
+      state.buffer_states[state.current_buf] = { cursors = state.cursors }
+    end
+    ensure_primary()
+    M.update_highlights()
+  end
+  return removed
+end
+
 function M.update_position(cursor, line, col)
   ensure_namespace()
   M.switch_buffer()
@@ -500,8 +550,7 @@ function M.remove_cursor(cursor, col)
   end
   for idx, cur in ipairs(state.cursors) do
     if cur == cursor then
-      delete_highlight(cur)
-      pcall(vim.api.nvim_buf_del_extmark, buf(), state.ns, cur.id)
+      delete_cursor_marks(cur)
       table.remove(state.cursors, idx)
       ensure_primary()
       return true
@@ -669,8 +718,12 @@ function M.restore_snapshot()
   state.snapshots = state.snapshots or {}
   local bufnr = current_buf()
   local stack = state.snapshots[bufnr]
-  local snapshot = type(stack) == 'table' and table.remove(stack) or nil
-  if stack and #stack == 0 then
+  if type(stack) ~= 'table' or #stack == 0 then
+    state.snapshots[bufnr] = nil
+    return false
+  end
+  local snapshot = table.remove(stack)
+  if #stack == 0 then
     state.snapshots[bufnr] = nil
   end
   if snapshot and #snapshot > 0 then
@@ -687,17 +740,19 @@ function M.discard_snapshot()
   end
   local bufnr = current_buf()
   local stack = state.snapshots[bufnr]
-  if type(stack) == 'table' then
+  if type(stack) == 'table' and #stack > 0 then
     table.remove(stack)
     if #stack == 0 then
       state.snapshots[bufnr] = nil
     end
+  elseif type(stack) == 'table' then
+    state.snapshots[bufnr] = nil
   end
 end
 
-function M.clear_snapshot()
+function M.clear_snapshot(bufnr)
   if state and state.snapshots then
-    state.snapshots[current_buf()] = nil
+    state.snapshots[bufnr or current_buf()] = nil
   end
 end
 

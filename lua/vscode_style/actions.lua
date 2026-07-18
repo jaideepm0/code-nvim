@@ -700,6 +700,7 @@ function M.move_cursor(unit, direction)
     end
     multi_cursor.update_position(cursor, new_line, new_col)
   end)
+  multi_cursor.dedupe()
   multi_cursor.update_highlights()
   require('vscode_style').deactivate_selection_keymaps()
 end
@@ -1259,6 +1260,7 @@ local function collapse_deleted_selections(selections)
     local position = sel.collapse or sel.start
     multi_cursor.update_position(sel.cursor, position.line, position.col)
   end
+  multi_cursor.dedupe()
 end
 
 local function sort_points_desc(points)
@@ -1304,6 +1306,7 @@ end
 
 function M.insert_text_at_cursors(text)
   multi_cursor.sync_cursors()
+  multi_cursor.dedupe()
   local points = {}
   for _, cursor in ipairs(multi_cursor.iter()) do
     points[#points + 1] = { cursor = cursor, line = cursor.line, col = cursor.col }

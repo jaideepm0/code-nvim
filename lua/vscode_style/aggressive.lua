@@ -107,6 +107,19 @@ local function window_is_floating(winid)
   return ok and win_config.relative and win_config.relative ~= ''
 end
 
+local function window_for_buffer(bufnr)
+  local current = vim.api.nvim_get_current_win()
+  if vim.api.nvim_win_get_buf(current) == bufnr then
+    return current
+  end
+  for _, winid in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_is_valid(winid) and vim.api.nvim_win_get_buf(winid) == bufnr then
+      return winid
+    end
+  end
+  return 0
+end
+
 function M.should_attach(bufnr, winid)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   winid = winid or vim.api.nvim_get_current_win()
@@ -119,18 +132,19 @@ function M.should_attach(bufnr, winid)
 
   local cfg = config()
   local forced = vim.b[bufnr].vscode_style_aggressive_enable
+  local eligible = true
   if not forced then
     if not vim.bo[bufnr].modifiable or vim.bo[bufnr].readonly then
-      return false
+      eligible = false
     end
     if runtime.excluded_buftypes[vim.bo[bufnr].buftype] then
-      return false
+      eligible = false
     end
     if runtime.excluded_filetypes[vim.bo[bufnr].filetype] then
-      return false
+      eligible = false
     end
     if not cfg.allow_floating and window_is_floating(winid) then
-      return false
+      eligible = false
     end
   end
   if type(cfg.should_attach) == 'function' then
@@ -143,7 +157,7 @@ function M.should_attach(bufnr, winid)
       return not not decision
     end
   end
-  return true
+  return eligible
 end
 
 function M.is_enabled()
@@ -152,7 +166,7 @@ end
 
 function M.is_active(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
-  return M.should_attach(bufnr, vim.api.nvim_get_current_win())
+  return M.should_attach(bufnr, window_for_buffer(bufnr))
 end
 
 local function fallback(lhs)
@@ -175,7 +189,12 @@ local function resolve_definition(definition)
     end
     resolved.lhs = override.lhs or resolved.lhs
     resolved.desc = override.desc or resolved.desc
-    resolved.action = override.action or resolved.action
+    if type(override.action) == 'string' then
+      resolved.action = override.action
+      if type(override.callback) ~= 'function' then
+        resolved.callback = nil
+      end
+    end
     resolved.args = type(override.args) == 'table' and vim.deepcopy(override.args) or resolved.args
     resolved.callback = type(override.callback) == 'function' and override.callback or resolved.callback
   end
@@ -347,6 +366,19 @@ local function setup_autocommands()
       enter_terminal(event.buf)
     end,
   })
+  vim.api.nvim_create_autocmd('OptionSet', {
+    group = runtime.group,
+    pattern = { 'buftype', 'modifiable', 'readonly' },
+    callback = function()
+      local bufnr = vim.api.nvim_get_current_buf()
+      if vim.bo[bufnr].buftype == 'terminal' then
+        detach_buffer(bufnr)
+        enter_terminal(bufnr)
+      elseif M.attach_buffer(bufnr, vim.api.nvim_get_current_win()) then
+        enter_editor(bufnr)
+      end
+    end,
+  })
   vim.api.nvim_create_autocmd('BufWipeout', {
     group = runtime.group,
     callback = function(event)
@@ -408,7 +440,7 @@ end
 function M.resume(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   runtime.suspended[bufnr] = nil
-  if runtime.enabled and M.attach_buffer(bufnr, vim.api.nvim_get_current_win()) then
+  if runtime.enabled and M.attach_buffer(bufnr, window_for_buffer(bufnr)) then
     enter_editor(bufnr)
   end
 end
@@ -447,9 +479,14 @@ local command_definitions = {
 
 local function create_commands()
   for name, callback in pairs(command_definitions) do
-    local ok = pcall(vim.api.nvim_create_user_command, name, callback, { force = true })
-    if ok then
-      runtime.commands[name] = true
+    local existing = vim.api.nvim_get_commands({ builtin = false })[name]
+    if existing then
+      notify(vim.log.levels.WARN, string.format('vscode_style: command %s already exists; leaving it untouched', name))
+    else
+      local ok = pcall(vim.api.nvim_create_user_command, name, callback, {})
+      if ok then
+        runtime.commands[name] = callback
+      end
     end
   end
 end
@@ -468,8 +505,12 @@ end
 
 function M.teardown()
   M.disable()
-  for name in pairs(runtime.commands) do
-    pcall(vim.api.nvim_del_user_command, name)
+  local commands = vim.api.nvim_get_commands({ builtin = false })
+  for name, callback in pairs(runtime.commands) do
+    local current = commands[name]
+    if current and current.callback == callback then
+      pcall(vim.api.nvim_del_user_command, name)
+    end
   end
   runtime.commands = {}
   runtime.mappings = {}

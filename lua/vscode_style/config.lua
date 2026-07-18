@@ -16,6 +16,7 @@ local default_autocommands = {
   buf_enter = true,
   buf_cleanup = true,
   cursor_moved_i = true,
+  text_changed = true,
 }
 
 local keymap_definitions = {

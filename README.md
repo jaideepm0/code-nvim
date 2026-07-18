@@ -112,6 +112,7 @@ require("vscode_style").setup({
     buf_enter = true,
     buf_cleanup = true,
     cursor_moved_i = true,
+    text_changed = true,
   },
   notify = vim.notify, -- a function, or false
   aggressive = {
