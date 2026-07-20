@@ -6,6 +6,7 @@ local runtime = {
   enabled = false,
   suspended = {},
   active = {},
+  normal_sessions = {},
   mappings = {},
   group = nil,
   commands = {},
@@ -39,7 +40,7 @@ local definitions = {
   { name = 'redo', lhs = { '<C-y>', '<C-S-z>' }, action = 'redo', desc = 'Redo' },
   { name = 'find', lhs = '<C-f>', action = 'start_search', desc = 'Find' },
   { name = 'save', lhs = '<C-s>', callback = function() M.save() end, desc = 'Save file' },
-  { name = 'cancel', lhs = '<Esc>', action = 'cancel_selection', desc = 'Dismiss UI or cursors' },
+  { name = 'cancel', lhs = '<Esc>', callback = function() M.handle_escape() end, desc = 'Dismiss UI or enter Normal mode' },
   { name = 'suspend', lhs = '<C-M-Esc>', callback = function() M.yield_to_neovim() end, desc = 'Suspend aggressive mode for this buffer' },
   { name = 'primary_click', lhs = '<LeftMouse>', action = 'primary_click', desc = 'Move the primary cursor and clear secondary cursors' },
   { name = 'previous_buffer', lhs = '<C-PageUp>', callback = function() M.switch_buffer('previous') end, desc = 'Previous buffer' },
@@ -182,9 +183,35 @@ function M.is_active(bufnr)
   return runtime.enabled and runtime.active[bufnr] == true and vim.api.nvim_buf_is_valid(bufnr)
 end
 
+function M.is_normal_session(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  return runtime.enabled and runtime.normal_sessions[bufnr] == true
+end
+
 local function fallback(lhs)
   local keys = vim.api.nvim_replace_termcodes(lhs, true, false, true)
   vim.api.nvim_feedkeys(keys, 'n', false)
+end
+
+function M.enter_normal_mode(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  if bufnr ~= vim.api.nvim_get_current_buf() or not M.is_active(bufnr) then
+    return false
+  end
+  runtime.normal_sessions[bufnr] = true
+  runtime.pending_enters[bufnr] = nil
+  fallback('<Esc>')
+  return true
+end
+
+function M.handle_escape()
+  if actions.cancel_selection() then
+    return true
+  end
+  if config().escape_to_normal == false then
+    return false
+  end
+  return M.enter_normal_mode()
 end
 
 local function resolve_definition(definition)
@@ -346,7 +373,7 @@ local function schedule_enter(bufnr, kind, callback)
 end
 
 local function enter_editor(bufnr)
-  if not config().auto_insert then
+  if not config().auto_insert or runtime.normal_sessions[bufnr] then
     return
   end
   schedule_enter(bufnr, 'editor', function()
@@ -406,6 +433,18 @@ local function setup_autocommands()
       enter_editor(event.buf)
     end,
   })
+  vim.api.nvim_create_autocmd('InsertEnter', {
+    group = runtime.group,
+    callback = function(event)
+      runtime.normal_sessions[event.buf] = nil
+    end,
+  })
+  vim.api.nvim_create_autocmd('BufLeave', {
+    group = runtime.group,
+    callback = function(event)
+      runtime.normal_sessions[event.buf] = nil
+    end,
+  })
   vim.api.nvim_create_autocmd('TermOpen', {
     group = runtime.group,
     callback = function(event)
@@ -432,6 +471,7 @@ local function setup_autocommands()
       runtime.mappings[event.buf] = nil
       runtime.suspended[event.buf] = nil
       runtime.active[event.buf] = nil
+      runtime.normal_sessions[event.buf] = nil
       runtime.pending_enters[event.buf] = nil
     end,
   })
@@ -446,6 +486,7 @@ function M.enable()
   runtime.generation = runtime.generation + 1
   runtime.enabled = true
   runtime.suspended = {}
+  runtime.normal_sessions = {}
   setup_autocommands()
   local bufnr = vim.api.nvim_get_current_buf()
   if vim.bo[bufnr].buftype == 'terminal' then
@@ -469,6 +510,7 @@ function M.disable()
   end
   runtime.suspended = {}
   runtime.active = {}
+  runtime.normal_sessions = {}
   if runtime.group then
     pcall(vim.api.nvim_del_augroup_by_id, runtime.group)
     runtime.group = nil
@@ -487,12 +529,14 @@ end
 function M.suspend(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   runtime.suspended[bufnr] = true
+  runtime.normal_sessions[bufnr] = nil
   detach_buffer(bufnr)
 end
 
 function M.resume(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   runtime.suspended[bufnr] = nil
+  runtime.normal_sessions[bufnr] = nil
   if runtime.enabled and M.attach_buffer(bufnr, window_for_buffer(bufnr)) then
     enter_editor(bufnr)
   end
@@ -569,6 +613,7 @@ function M.teardown()
   runtime.mappings = {}
   runtime.suspended = {}
   runtime.active = {}
+  runtime.normal_sessions = {}
   runtime.pending_enters = {}
 end
 
@@ -577,6 +622,7 @@ function M.get_state()
     enabled = runtime.enabled,
     suspended = vim.deepcopy(runtime.suspended),
     active = vim.deepcopy(runtime.active),
+    normal_sessions = vim.deepcopy(runtime.normal_sessions),
   }
 end
 

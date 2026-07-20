@@ -694,6 +694,53 @@ test('aggressive buffers can be suspended and resumed without touching core stat
   plugin.disable()
 end)
 
+test('aggressive Escape dismisses cursor state before opening a Normal-mode session', function()
+  local plugin, _, multi_cursor = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha', 'beta' })
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = { enabled = true, auto_insert = false },
+  })
+  multi_cursor.add_cursor_at(1, 0)
+  local escape = get_buf_map(bufnr, '<Esc>')
+  assert_true(escape and type(escape.callback) == 'function')
+
+  escape.callback()
+  assert_eq(#multi_cursor.iter(), 1, 'first Escape should remove secondary cursors')
+  assert_true(not plugin.is_aggressive_normal_mode(bufnr))
+
+  escape.callback()
+  assert_true(plugin.is_aggressive_normal_mode(bufnr), 'second Escape should yield to real Normal mode')
+  assert_true(plugin.is_aggressive_buffer(bufnr), 'temporary Normal mode should keep aggressive attachment ready')
+
+  vim.api.nvim_exec_autocmds('InsertEnter', { buffer = bufnr })
+  assert_true(not plugin.is_aggressive_normal_mode(bufnr), 'native Insert entry should restore aggressive editing')
+  plugin.disable()
+end)
+
+test('aggressive Normal-mode API is safe when inactive and configurable', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha' })
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = { enabled = true, auto_insert = false, escape_to_normal = false },
+  })
+
+  local escape = get_buf_map(bufnr, '<Esc>')
+  escape.callback()
+  assert_true(not plugin.is_aggressive_normal_mode(bufnr), 'escape_to_normal=false should preserve legacy behavior')
+
+  plugin.disable_aggressive_mode()
+  assert_true(not plugin.enter_normal_mode(bufnr), 'inactive aggressive mode should reject Normal-mode sessions')
+  plugin.disable()
+end)
+
 test('Ctrl+U walks back cursor additions without undoing text', function()
   local env = setup_buffer({ 'one', 'two', 'three' }, { cursor = { 1, 0 } })
   env.actions.add_cursor_vertical('down')

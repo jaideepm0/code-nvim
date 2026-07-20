@@ -70,10 +70,12 @@ In addition to the selection and multi-cursor bindings above, aggressive mode pr
 | `Ctrl+S`, `Ctrl+F` | Save or enter Neovim's search command line |
 | `Ctrl+PageUp/PageDown` | Switch buffers |
 | `Click` | Move the primary cursor and clear secondary cursors |
-| `Esc` | Dismiss completion/snippets, selections, or secondary cursors without leaving Insert mode |
+| `Esc` | Dismiss completion/snippets or simulated cursor state; when none remains, enter real Normal mode |
 | `Ctrl+Alt+Esc` | Suspend aggressive mode for the buffer and return to regular Neovim |
 
 The controller deliberately does not attach editing mappings to terminal, prompt, help, quickfix, `nofile`, read-only, or floating UI buffers. Terminal buffers are put into terminal-input mode, and returning to an eligible file buffer restores the non-modal editing experience. Buffer-local mappings from completion engines, snippets, and other plugins win by default.
+
+`Esc` is contextual: the first press closes completion or snippets and clears selections/secondary cursors; once there is nothing to dismiss, it opens a temporary real Normal-mode session. Use ordinary `i`, `a`, `o`, or another native Insert command to return to aggressive editing automatically. `Ctrl+Alt+Esc` remains available when you want the buffer to stay suspended across Insert entries.
 
 Repeated `Ctrl+D` wraps through unmatched literal occurrences. `Ctrl+U` walks back the bounded cursor-state history without undoing buffer text. Copying several selections also records their individual payloads, so a paste with the same number of cursors restores each selection one-for-one; external clipboard text continues to paste identically at every cursor.
 
@@ -85,6 +87,7 @@ vscode.enable_aggressive_mode()
 vscode.disable_aggressive_mode()
 vscode.suspend_aggressive_mode() -- current buffer only
 vscode.resume_aggressive_mode()
+vscode.enter_normal_mode() -- temporary; native Insert commands return automatically
 ```
 
 The corresponding commands are `:VscodeStyleAggressiveEnable`, `:VscodeStyleAggressiveDisable`, `:VscodeStyleAggressiveToggle`, `:VscodeStyleAggressiveSuspend`, and `:VscodeStyleAggressiveResume`. `is_aggressive_mode()` and `is_aggressive_buffer()` can be used in a statusline. Mode changes emit the `User VscodeStyleAggressiveModeChanged` event.
@@ -118,6 +121,7 @@ require("vscode_style").setup({
   aggressive = {
     enabled = true,
     auto_insert = true,
+    escape_to_normal = true,
     terminal_startinsert = true,
     mapping_strategy = "respect", -- or "force", scoped per eligible buffer
     clipboard_register = "+",

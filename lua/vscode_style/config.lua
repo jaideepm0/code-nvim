@@ -274,6 +274,7 @@ local defaults = {
 local aggressive_defaults = {
   enabled = false,
   auto_insert = true,
+  escape_to_normal = true,
   terminal_startinsert = true,
   allow_floating = false,
   mapping_strategy = 'respect',
@@ -319,7 +320,7 @@ local function normalize_aggressive(value)
 
   -- Supplying an options table is itself an opt-in unless explicitly disabled.
   cfg.enabled = value.enabled ~= false
-  for _, key in ipairs({ 'auto_insert', 'terminal_startinsert', 'allow_floating' }) do
+  for _, key in ipairs({ 'auto_insert', 'escape_to_normal', 'terminal_startinsert', 'allow_floating' }) do
     if value[key] ~= nil then
       cfg[key] = not not value[key]
     end

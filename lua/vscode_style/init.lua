@@ -404,6 +404,14 @@ function M.is_aggressive_buffer(bufnr)
   return aggressive.is_active(bufnr)
 end
 
+function M.enter_normal_mode(bufnr)
+  return aggressive.enter_normal_mode(bufnr)
+end
+
+function M.is_aggressive_normal_mode(bufnr)
+  return aggressive.is_normal_session(bufnr)
+end
+
 local function set_selection_delete_keymap(bufnr, lhs)
   local restore = buffer_local_maparg(bufnr, lhs)
   if restore then
