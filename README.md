@@ -152,6 +152,8 @@ Individual keymap overrides accept `false`, a replacement `lhs` string/list, or 
 
 Aggressive keymap overrides use the same `false`, string/list, or `{ enabled, lhs, desc, callback, action, args }` forms under `aggressive.keymaps`. Set `vim.b.vscode_style_aggressive_disable = true` to exclude one buffer, or `vim.b.vscode_style_aggressive_enable = true` to opt a special buffer in. The `respect` strategy never replaces an existing buffer-local or global Insert-mode mapping. The `force` strategy restores displaced buffer-local mappings when aggressive mode detaches, as long as another plugin has not replaced the aggressive mapping in the meantime.
 
+`aggressive.should_attach` is evaluated on buffer/window lifecycle and eligibility-option events, then cached for key dispatch. If external state used by the callback changes independently, call `resume_aggressive_mode(bufnr)` to refresh that buffer's attachment decision.
+
 To remove the plugin's mappings, autocmds, extmarks, and simulated cursors without restarting Neovim:
 
 ```lua

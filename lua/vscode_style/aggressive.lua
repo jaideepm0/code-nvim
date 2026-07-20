@@ -5,11 +5,14 @@ local actions
 local runtime = {
   enabled = false,
   suspended = {},
+  active = {},
   mappings = {},
   group = nil,
   commands = {},
   excluded_buftypes = {},
   excluded_filetypes = {},
+  generation = 0,
+  pending_enters = {},
 }
 
 local unpack = table.unpack or unpack
@@ -78,17 +81,27 @@ local function as_lhs_list(value)
   return result
 end
 
-local function buffer_map(bufnr, lhs)
-  if not vim.api.nvim_buf_is_valid(bufnr) then
-    return nil
-  end
-  local ok, result = pcall(vim.api.nvim_buf_call, bufnr, function()
-    local map = vim.fn.maparg(lhs, 'i', false, true)
-    if type(map) == 'table' and type(map.lhs) == 'string' and map.lhs ~= '' then
-      return map
+local function keymap_index(maps)
+  local result = {}
+  for _, map in ipairs(maps or {}) do
+    if type(map.lhs) == 'string' and map.lhs ~= '' then
+      result[canonical_lhs(map.lhs)] = map
     end
-  end)
-  return ok and result or nil
+  end
+  return result
+end
+
+local function buffer_maps(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return {}
+  end
+  local ok, result = pcall(vim.api.nvim_buf_get_keymap, bufnr, 'i')
+  return ok and keymap_index(result) or {}
+end
+
+local function global_maps()
+  local ok, result = pcall(vim.api.nvim_get_keymap, 'i')
+  return ok and keymap_index(result) or {}
 end
 
 local function set_from_list(values)
@@ -166,7 +179,7 @@ end
 
 function M.is_active(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
-  return M.should_attach(bufnr, window_for_buffer(bufnr))
+  return runtime.enabled and runtime.active[bufnr] == true and vim.api.nvim_buf_is_valid(bufnr)
 end
 
 local function fallback(lhs)
@@ -215,7 +228,7 @@ local function callback_for(bufnr, lhs, definition)
     return nil
   end
   return function()
-    if not M.should_attach(bufnr, vim.api.nvim_get_current_win()) then
+    if not M.is_active(bufnr) or bufnr ~= vim.api.nvim_get_current_buf() then
       fallback(lhs)
       return
     end
@@ -228,14 +241,16 @@ end
 
 local function detach_buffer(bufnr)
   local entries = runtime.mappings[bufnr]
+  runtime.active[bufnr] = nil
   if not entries then
     if vim.api.nvim_buf_is_valid(bufnr) then
       vim.b[bufnr].vscode_style_aggressive_active = false
     end
     return
   end
+  local current_maps = buffer_maps(bufnr)
   for _, entry in ipairs(entries) do
-    local current = buffer_map(bufnr, entry.lhs)
+    local current = current_maps[entry.identity]
     local owns = current and current.callback == entry.callback
     if owns then
       pcall(vim.keymap.del, 'i', entry.lhs, { buffer = bufnr })
@@ -260,11 +275,14 @@ function M.attach_buffer(bufnr, winid)
     return false
   end
   if runtime.mappings[bufnr] then
+    runtime.active[bufnr] = true
     vim.b[bufnr].vscode_style_aggressive_active = true
     return true
   end
 
   local entries, seen = {}, {}
+  local local_maps = buffer_maps(bufnr)
+  local inherited_maps = global_maps()
   runtime.mappings[bufnr] = entries
   for _, base in ipairs(definitions) do
     local definition = resolve_definition(base)
@@ -275,7 +293,7 @@ function M.attach_buffer(bufnr, winid)
           goto continue
         end
         seen[identity] = true
-        local existing = buffer_map(bufnr, lhs)
+        local existing = local_maps[identity] or inherited_maps[identity]
         if existing and config().mapping_strategy == 'respect' then
           goto continue
         end
@@ -283,14 +301,19 @@ function M.attach_buffer(bufnr, winid)
         if not callback then
           goto continue
         end
-        local restore = existing and existing.buffer == 1 and existing or nil
+        local restore = local_maps[identity]
         local ok, err = pcall(vim.keymap.set, 'i', lhs, callback, {
           buffer = bufnr,
           silent = true,
           desc = 'VS Code aggressive: ' .. definition.desc,
         })
         if ok then
-          entries[#entries + 1] = { lhs = lhs, callback = callback, restore = restore }
+          entries[#entries + 1] = {
+            lhs = lhs,
+            identity = identity,
+            callback = callback,
+            restore = restore,
+          }
         else
           notify(vim.log.levels.WARN, string.format('vscode_style: failed to map %s (%s)', lhs, err))
         end
@@ -298,16 +321,36 @@ function M.attach_buffer(bufnr, winid)
       end
     end
   end
+  runtime.active[bufnr] = true
   vim.b[bufnr].vscode_style_aggressive_active = true
   return true
+end
+
+local function schedule_enter(bufnr, kind, callback)
+  local pending = runtime.pending_enters[bufnr]
+  if pending and pending.kind == kind and pending.generation == runtime.generation then
+    return
+  end
+  local token = { kind = kind, generation = runtime.generation }
+  runtime.pending_enters[bufnr] = token
+  vim.schedule(function()
+    if runtime.pending_enters[bufnr] ~= token then
+      return
+    end
+    runtime.pending_enters[bufnr] = nil
+    if token.generation ~= runtime.generation or not runtime.enabled then
+      return
+    end
+    callback()
+  end)
 end
 
 local function enter_editor(bufnr)
   if not config().auto_insert then
     return
   end
-  vim.schedule(function()
-    if not runtime.enabled or bufnr ~= vim.api.nvim_get_current_buf() or not M.is_active(bufnr) then
+  schedule_enter(bufnr, 'editor', function()
+    if bufnr ~= vim.api.nvim_get_current_buf() or not M.is_active(bufnr) then
       return
     end
     local mode = vim.api.nvim_get_mode().mode:sub(1, 1)
@@ -321,8 +364,12 @@ local function enter_terminal(bufnr)
   if not config().terminal_startinsert then
     return
   end
-  vim.schedule(function()
-    if runtime.enabled and bufnr == vim.api.nvim_get_current_buf() and vim.bo[bufnr].buftype == 'terminal' then
+  schedule_enter(bufnr, 'terminal', function()
+    if
+      vim.api.nvim_buf_is_valid(bufnr)
+      and bufnr == vim.api.nvim_get_current_buf()
+      and vim.bo[bufnr].buftype == 'terminal'
+    then
       pcall(vim.cmd, 'startinsert')
     end
   end)
@@ -384,6 +431,8 @@ local function setup_autocommands()
     callback = function(event)
       runtime.mappings[event.buf] = nil
       runtime.suspended[event.buf] = nil
+      runtime.active[event.buf] = nil
+      runtime.pending_enters[event.buf] = nil
     end,
   })
 end
@@ -394,6 +443,7 @@ function M.enable()
     enter_editor(vim.api.nvim_get_current_buf())
     return
   end
+  runtime.generation = runtime.generation + 1
   runtime.enabled = true
   runtime.suspended = {}
   setup_autocommands()
@@ -411,11 +461,14 @@ function M.disable()
     return
   end
   runtime.enabled = false
+  runtime.generation = runtime.generation + 1
+  runtime.pending_enters = {}
   local buffers = vim.tbl_keys(runtime.mappings)
   for _, bufnr in ipairs(buffers) do
     detach_buffer(bufnr)
   end
   runtime.suspended = {}
+  runtime.active = {}
   if runtime.group then
     pcall(vim.api.nvim_del_augroup_by_id, runtime.group)
     runtime.group = nil
@@ -515,12 +568,15 @@ function M.teardown()
   runtime.commands = {}
   runtime.mappings = {}
   runtime.suspended = {}
+  runtime.active = {}
+  runtime.pending_enters = {}
 end
 
 function M.get_state()
   return {
     enabled = runtime.enabled,
     suspended = vim.deepcopy(runtime.suspended),
+    active = vim.deepcopy(runtime.active),
   }
 end
 

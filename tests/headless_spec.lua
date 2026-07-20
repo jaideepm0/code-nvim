@@ -764,6 +764,71 @@ test('aggressive should_attach can explicitly opt an excluded buffer in', functi
   plugin.disable()
 end)
 
+test('aggressive key callbacks use cached lifecycle eligibility', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha' })
+  vim.api.nvim_win_set_cursor(0, { 1, 2 })
+  local eligibility_checks = 0
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = {
+      enabled = true,
+      auto_insert = false,
+      should_attach = function(candidate)
+        eligibility_checks = eligibility_checks + 1
+        return candidate == bufnr
+      end,
+    },
+  })
+
+  local checks_after_attach = eligibility_checks
+  local map = get_buf_map(bufnr, '<Left>')
+  assert_true(map and type(map.callback) == 'function')
+  for _ = 1, 10 do
+    map.callback()
+  end
+
+  assert_eq(eligibility_checks, checks_after_attach, 'hot-path key callbacks should not rerun attachment policy')
+  assert_true(plugin.is_aggressive_buffer(bufnr))
+  assert_eq(eligibility_checks, checks_after_attach, 'status checks should read cached active state')
+  plugin.disable()
+end)
+
+test('aggressive setup invalidates stale scheduled Insert-mode transitions', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha' })
+  local original_cmd = vim.cmd
+  local startinsert_calls = 0
+  vim.cmd = function(command)
+    if command == 'startinsert' then
+      startinsert_calls = startinsert_calls + 1
+      return
+    end
+    return original_cmd(command)
+  end
+
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = { enabled = true, auto_insert = true },
+  })
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = { enabled = true, auto_insert = false },
+  })
+  vim.wait(10)
+  vim.cmd = original_cmd
+
+  assert_eq(startinsert_calls, 0, 'a prior setup must not re-enter Insert mode after reconfiguration')
+  plugin.disable()
+end)
+
 test('aggressive action override replaces a definition built-in callback', function()
   local plugin = fresh_plugin()
   local bufnr = vim.api.nvim_create_buf(false, false)
