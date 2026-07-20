@@ -326,7 +326,7 @@ local function setup_autocommands()
       group = state.autocmd_group,
       callback = function(args)
         M.deactivate_selection_keymaps(args.buf)
-        if buffer_is_active(args.buf) then
+        if buffer_is_active(args.buf) and multi_cursor.peek_count() > 0 then
           multi_cursor.clear_all_selections()
           multi_cursor.update_highlights()
         end

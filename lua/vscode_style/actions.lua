@@ -778,6 +778,11 @@ function M.cancel_selection()
     end
   end
 
+  if multi_cursor.peek_count and multi_cursor.peek_count() == 0 then
+    vim.cmd('nohlsearch')
+    return false
+  end
+
   multi_cursor.sync_cursors()
   local cursors = multi_cursor.iter()
   local had_extra_state = #cursors > 1

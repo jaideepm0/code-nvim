@@ -869,6 +869,38 @@ test('aggressive Normal-mode API is safe when inactive and configurable', functi
   plugin.disable()
 end)
 
+test('clean aggressive Escape suppresses auto-insert without allocating cursor state', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha' })
+  local original_cmd = vim.cmd
+  local startinsert_calls = 0
+  vim.cmd = function(command)
+    if command == 'startinsert' then
+      startinsert_calls = startinsert_calls + 1
+      return
+    end
+    return original_cmd(command)
+  end
+
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = { enabled = true, auto_insert = true },
+  })
+  local escape = get_buf_map(bufnr, '<Esc>')
+  escape.callback()
+  vim.api.nvim_exec_autocmds('InsertLeave', { buffer = bufnr })
+  vim.wait(10)
+  vim.cmd = original_cmd
+
+  assert_true(plugin.is_aggressive_normal_mode(bufnr))
+  assert_eq(startinsert_calls, 0, 'temporary Normal mode must suppress scheduled aggressive re-entry')
+  assert_eq(plugin.get_state().buffer_states[bufnr], nil, 'clean Escape should not allocate multi-cursor state')
+  plugin.disable()
+end)
+
 test('Ctrl+U walks back cursor additions without undoing text', function()
   local env = setup_buffer({ 'one', 'two', 'three' }, { cursor = { 1, 0 } })
   env.actions.add_cursor_vertical('down')
