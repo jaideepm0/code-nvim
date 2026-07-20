@@ -684,6 +684,9 @@ function M.cleanup_buffer(bufnr)
   if state.snapshots then
     state.snapshots[bufnr] = nil
   end
+  if state.pending_inserts then
+    state.pending_inserts[bufnr] = nil
+  end
   state.generation = (state.generation or 0) + 1
 end
 

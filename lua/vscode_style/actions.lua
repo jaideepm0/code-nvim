@@ -1841,14 +1841,17 @@ local function insert_at_live_cursors(target_buf, text, skip)
 end
 
 local function flush_pending_insert(target_buf, pending)
-  if not vim.api.nvim_buf_is_valid(target_buf) then
+  if not vim.api.nvim_buf_is_valid(target_buf) or not vim.api.nvim_buf_is_loaded(target_buf) then
+    if state.pending_inserts and state.pending_inserts[target_buf] == pending then
+      state.pending_inserts[target_buf] = nil
+    end
     return
   end
   if not state.pending_inserts or state.pending_inserts[target_buf] ~= pending then
     return
   end
   state.pending_inserts[target_buf] = nil
-  vim.api.nvim_buf_call(target_buf, function()
+  local call_ok, call_err = pcall(vim.api.nvim_buf_call, target_buf, function()
     local ok, err = pcall(function()
       if pending.primary then
         multi_cursor.ensure_primary_cursor_at(pending.primary.line, pending.primary.col)
@@ -1884,6 +1887,9 @@ local function flush_pending_insert(target_buf, pending)
       notify(log_levels.ERROR, 'vscode_style insert failed: ' .. tostring(err))
     end
   end)
+  if not call_ok then
+    notify(log_levels.ERROR, 'vscode_style insert context failed: ' .. tostring(call_err))
+  end
 end
 
 local function queue_insert(char)

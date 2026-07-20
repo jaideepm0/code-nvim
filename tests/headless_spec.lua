@@ -466,6 +466,16 @@ test('multi-cursor state is isolated and retained per buffer', function()
   assert_eq(#env.multi_cursor.iter(), 2, 'first buffer cursors should not be discarded by a buffer switch')
 end)
 
+test('buffer cleanup discards deferred inserts for the destroyed buffer', function()
+  local env = setup_buffer({ 'alpha' }, { cursor = { 1, 1 } })
+  local pending = { chars = { 'x' } }
+  env.plugin.get_state().pending_inserts[env.bufnr] = pending
+
+  env.multi_cursor.cleanup_buffer(env.bufnr)
+
+  assert_eq(env.plugin.get_state().pending_inserts[env.bufnr], nil)
+end)
+
 test('secondary cursors have a visible extmark overlay', function()
   local env = setup_buffer({ 'alpha' }, { cursor = { 1, 1 } })
   local secondary = env.multi_cursor.add_cursor_at(0, 3)
