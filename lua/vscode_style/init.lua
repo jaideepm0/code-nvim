@@ -491,19 +491,35 @@ function M.enable_aggressive_mode()
 end
 
 function M.disable_aggressive_mode()
+  if not state.enabled then
+    return false
+  end
   aggressive.disable()
+  return true
 end
 
 function M.toggle_aggressive_mode()
+  if not state.enabled then
+    return false
+  end
   aggressive.toggle()
+  return true
 end
 
 function M.suspend_aggressive_mode(bufnr)
+  if not state.enabled then
+    return false
+  end
   aggressive.suspend(bufnr)
+  return true
 end
 
 function M.resume_aggressive_mode(bufnr)
+  if not state.enabled then
+    return false
+  end
   aggressive.resume(bufnr)
+  return true
 end
 
 function M.is_aggressive_mode()

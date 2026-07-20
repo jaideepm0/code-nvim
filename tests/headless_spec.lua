@@ -718,6 +718,11 @@ test('disabled public probes do not recreate cursor state or aggressive mode', f
   assert_eq(env.plugin.get_cursor_count(), 0)
   assert_true(not env.plugin.is_buffer_active(env.bufnr))
   assert_true(not env.plugin.enable_aggressive_mode())
+  assert_true(not env.plugin.disable_aggressive_mode())
+  assert_true(not env.plugin.toggle_aggressive_mode())
+  assert_true(not env.plugin.suspend_aggressive_mode(env.bufnr))
+  assert_true(not env.plugin.resume_aggressive_mode(env.bufnr))
+  assert_true(not env.plugin.is_aggressive_mode())
   assert_eq(next(env.plugin.get_state().buffer_states), nil, 'read-only probes must not recreate buffer state')
 end)
 
