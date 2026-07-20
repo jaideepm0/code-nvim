@@ -203,7 +203,7 @@ local function buffer_is_active(bufnr)
   end
   local active = state.regular_buffers[bufnr]
   if active == nil then
-    active = refresh_regular_buffer(bufnr, vim.api.nvim_get_current_win())
+    active = refresh_regular_buffer(bufnr, eligibility.window_for_buffer(bufnr))
   end
   return active == true
 end
@@ -295,10 +295,22 @@ local function setup_autocommands()
   end
   state.autocmd_group = vim.api.nvim_create_augroup('VscodeStyleInsert', { clear = true })
 
-  vim.api.nvim_create_autocmd({ 'BufEnter', 'WinEnter', 'FileType' }, {
+  vim.api.nvim_create_autocmd({ 'BufEnter', 'FileType' }, {
     group = state.autocmd_group,
     callback = function(args)
       refresh_regular_buffer(args.buf, vim.api.nvim_get_current_win())
+    end,
+  })
+
+  vim.api.nvim_create_autocmd('WinEnter', {
+    group = state.autocmd_group,
+    callback = function()
+      local winid = vim.api.nvim_get_current_win()
+      vim.schedule(function()
+        if state.enabled and vim.api.nvim_win_is_valid(winid) then
+          refresh_regular_buffer(vim.api.nvim_win_get_buf(winid), winid)
+        end
+      end)
     end,
   })
 

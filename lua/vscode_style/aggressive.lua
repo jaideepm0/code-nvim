@@ -379,17 +379,36 @@ local function setup_autocommands()
     pcall(vim.api.nvim_del_augroup_by_id, runtime.group)
   end
   runtime.group = vim.api.nvim_create_augroup('VscodeStyleAggressive', { clear = true })
-  vim.api.nvim_create_autocmd({ 'BufEnter', 'WinEnter', 'FileType' }, {
+  local function handle_window_buffer(bufnr, winid)
+    if not vim.api.nvim_buf_is_valid(bufnr) or not vim.api.nvim_win_is_valid(winid) then
+      return
+    end
+    if vim.bo[bufnr].buftype == 'terminal' then
+      detach_buffer(bufnr)
+      enter_terminal(bufnr)
+      return
+    end
+    if M.attach_buffer(bufnr, winid) then
+      enter_editor(bufnr)
+    end
+  end
+
+  vim.api.nvim_create_autocmd({ 'BufEnter', 'FileType' }, {
     group = runtime.group,
     callback = function(event)
-      if vim.bo[event.buf].buftype == 'terminal' then
-        detach_buffer(event.buf)
-        enter_terminal(event.buf)
-        return
-      end
-      if M.attach_buffer(event.buf, vim.api.nvim_get_current_win()) then
-        enter_editor(event.buf)
-      end
+      handle_window_buffer(event.buf, vim.api.nvim_get_current_win())
+    end,
+  })
+  vim.api.nvim_create_autocmd('WinEnter', {
+    group = runtime.group,
+    callback = function()
+      local winid = vim.api.nvim_get_current_win()
+      local generation = runtime.generation
+      vim.schedule(function()
+        if generation == runtime.generation and runtime.enabled and vim.api.nvim_win_is_valid(winid) then
+          handle_window_buffer(vim.api.nvim_win_get_buf(winid), winid)
+        end
+      end)
     end,
   })
   vim.api.nvim_create_autocmd('InsertLeave', {

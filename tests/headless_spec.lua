@@ -685,6 +685,29 @@ test('regular eligibility cache follows editable option changes', function()
   plugin.disable()
 end)
 
+test('regular policy resolves a window belonging to a non-current buffer', function()
+  local plugin = fresh_plugin()
+  local file_buf = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(file_buf)
+  vim.api.nvim_buf_set_lines(file_buf, 0, -1, false, { 'alpha' })
+  plugin.setup({ mapping_strategy = 'skip', notify = false })
+  plugin.get_state().regular_buffers[file_buf] = nil
+
+  local ui_buf = vim.api.nvim_create_buf(false, true)
+  local floating = vim.api.nvim_open_win(ui_buf, true, {
+    relative = 'editor',
+    row = 1,
+    col = 1,
+    width = 20,
+    height = 2,
+    style = 'minimal',
+  })
+
+  assert_true(plugin.is_buffer_active(file_buf), 'target file should use its own non-floating window')
+  vim.api.nvim_win_close(floating, true)
+  plugin.disable()
+end)
+
 test('disabled public probes do not recreate cursor state or aggressive mode', function()
   local env = setup_buffer({ 'alpha' }, { cursor = { 1, 1 } })
   env.multi_cursor.add_cursor_at(0, 3)
