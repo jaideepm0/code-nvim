@@ -570,8 +570,8 @@ local function get_selection_string(selection)
   return table.concat(chunks, '\n')
 end
 
-local function document_index()
-  local lines = vim.api.nvim_buf_get_lines(buf(), 0, -1, false)
+local function multiline_document_index(lines)
+  lines = lines or vim.api.nvim_buf_get_lines(buf(), 0, -1, false)
   local offsets = {}
   local offset = 0
   for index, text in ipairs(lines) do
@@ -599,7 +599,22 @@ local function offset_to_position(lines, offsets, offset)
 end
 
 local function find_next_occurrence(needle, start_line, start_col)
-  local lines, offsets, document = document_index()
+  local lines = vim.api.nvim_buf_get_lines(buf(), 0, -1, false)
+  if not needle:find('\n', 1, true) then
+    local first_line = clamp(start_line + 1, 1, #lines)
+    for index = first_line, #lines do
+      local text = lines[index]
+      local init_col = index == first_line and clamp(start_col, 0, #text) or 0
+      local found_start, found_end = text:find(needle, init_col + 1, true)
+      if found_start then
+        return { line = index - 1, col = found_start - 1 }, { line = index - 1, col = found_end }
+      end
+    end
+    return nil
+  end
+
+  local offsets, document
+  lines, offsets, document = multiline_document_index(lines)
   local line_index = clamp(start_line + 1, 1, #lines)
   local start_offset = offsets[line_index] + clamp(start_col, 0, #lines[line_index])
   local found_start, found_end = document:find(needle, start_offset + 1, true)
@@ -610,8 +625,31 @@ local function find_next_occurrence(needle, start_line, start_col)
 end
 
 local function collect_all_occurrences(needle, limit)
-  local lines, offsets, document = document_index()
+  local lines = vim.api.nvim_buf_get_lines(buf(), 0, -1, false)
   local matches = {}
+  if not needle:find('\n', 1, true) then
+    for index, text in ipairs(lines) do
+      local search_col = 1
+      while #matches < limit do
+        local found_start, found_end = text:find(needle, search_col, true)
+        if not found_start then
+          break
+        end
+        matches[#matches + 1] = {
+          anchor = { line = index - 1, col = found_start - 1 },
+          active = { line = index - 1, col = found_end },
+        }
+        search_col = found_end + 1
+      end
+      if #matches >= limit then
+        break
+      end
+    end
+    return matches
+  end
+
+  local offsets, document
+  lines, offsets, document = multiline_document_index(lines)
   local search_offset = 1
   while #matches < limit do
     local found_start, found_end = document:find(needle, search_offset, true)

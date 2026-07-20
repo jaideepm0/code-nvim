@@ -571,6 +571,22 @@ test('select-all occurrence scanning respects max_cursors', function()
   assert_eq(#env.multi_cursor.get_positions(), 7, 'large match sets should be capped during collection')
 end)
 
+test('single-line occurrence scanning finds adjacent matches across lines', function()
+  local env = setup_buffer({ 'foofoo', 'xfoo', 'foo' }, { cursor = { 1, 3 } })
+  env.multi_cursor.replace_all_cursors({
+    selected_cursor(0, 0, 0, 3, true),
+  })
+
+  env.actions.select_all_occurrences()
+
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 0, col = 3 },
+    { line = 0, col = 6 },
+    { line = 1, col = 4 },
+    { line = 2, col = 3 },
+  })
+end)
+
 test('aggressive mode attaches ordinary Insert-mode shortcuts only to editable file buffers', function()
   local plugin = fresh_plugin()
   local file_buf = vim.api.nvim_create_buf(false, false)
@@ -693,6 +709,15 @@ test('external text changes invalidate raw cursor-history positions', function()
   env.actions.add_cursor_vertical('down')
   vim.api.nvim_buf_set_lines(env.bufnr, 0, 0, false, { 'inserted externally' })
   vim.api.nvim_exec_autocmds('TextChanged', { buffer = env.bufnr })
+
+  assert_true(not env.actions.undo_cursor_state())
+  assert_eq(#env.multi_cursor.iter(), 2)
+end)
+
+test('completion-menu text changes invalidate raw cursor-history positions', function()
+  local env = setup_buffer({ 'one', 'two' }, { cursor = { 1, 0 } })
+  env.actions.add_cursor_vertical('down')
+  vim.api.nvim_exec_autocmds('TextChangedP', { buffer = env.bufnr })
 
   assert_true(not env.actions.undo_cursor_state())
   assert_eq(#env.multi_cursor.iter(), 2)

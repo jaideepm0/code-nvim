@@ -319,7 +319,7 @@ local function setup_autocommands()
   end
 
   if state.config.autocommands.text_changed then
-    vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, {
+    vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI', 'TextChangedP' }, {
       group = state.autocmd_group,
       callback = function(args)
         -- Cursor-history snapshots contain byte positions, not extmarks. Any
