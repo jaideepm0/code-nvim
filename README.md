@@ -118,6 +118,15 @@ require("vscode_style").setup({
     text_changed = true,
   },
   notify = vim.notify, -- a function, or false
+  buffer_policy = {
+    allow_floating = false,
+    exclude_buftypes = { "acwrite", "help", "nofile", "nowrite", "prompt", "quickfix", "terminal" },
+    exclude_filetypes = { "TelescopePrompt", "lazy", "neo-tree" },
+    should_handle = function(bufnr, winid, context)
+      -- context is "regular" or "aggressive". Return true/false to
+      -- override the defaults, or nil to retain them.
+    end,
+  },
   aggressive = {
     enabled = true,
     auto_insert = true,
@@ -125,6 +134,7 @@ require("vscode_style").setup({
     terminal_startinsert = true,
     mapping_strategy = "respect", -- or "force", scoped per eligible buffer
     clipboard_register = "+",
+    -- These inherit buffer_policy and can be overridden for aggressive mode:
     allow_floating = false,
     exclude_buftypes = { "nofile", "prompt", "quickfix", "terminal" },
     exclude_filetypes = { "TelescopePrompt", "lazy", "neo-tree" },
@@ -152,6 +162,8 @@ require("vscode_style").setup({
 
 `mapping_strategy = "respect"` installs only globally free shortcuts (and respects a target buffer-local mapping when `opts.buffer` is used). `"force"` replaces existing mappings and restores them during the next setup or `disable()` call. `"skip"` installs no persistent mappings, which is useful when another layer calls the action functions directly.
 
+Regular and aggressive dispatch share `buffer_policy`. Even when a regular mapping is global, it yields to Neovim's native key behavior in excluded, unmodifiable, read-only, unloaded, or disallowed floating buffers. Eligibility is cached on buffer/window/filetype events and refreshed when `buftype`, `modifiable`, or `readonly` changes, so user policy callbacks do not run on every keypress.
+
 Individual keymap overrides accept `false`, a replacement `lhs` string/list, or a table containing `enabled`, `lhs`, `opts`, `desc`, `callback`, `action`, and `args`. Use `require("vscode_style.config").keymap_definitions()` to inspect the supported names.
 
 Aggressive keymap overrides use the same `false`, string/list, or `{ enabled, lhs, desc, callback, action, args }` forms under `aggressive.keymaps`. Set `vim.b.vscode_style_aggressive_disable = true` to exclude one buffer, or `vim.b.vscode_style_aggressive_enable = true` to opt a special buffer in. The `respect` strategy never replaces an existing buffer-local or global Insert-mode mapping. The `force` strategy restores displaced buffer-local mappings when aggressive mode detaches, as long as another plugin has not replaced the aggressive mapping in the meantime.
@@ -165,7 +177,7 @@ require("vscode_style").disable()
 ```
 
 Mappings installed or replaced by another plugin after `setup()` are left untouched during cleanup.
-For statuslines or diagnostics, `get_cursor_count()` returns the active count and `get_cursors()` returns a detached snapshot of the per-buffer cursor state.
+For statuslines or diagnostics, `is_enabled()` reports the core lifecycle, `is_buffer_active()` reports the effective regular/aggressive dispatch state, and `is_buffer_eligible()` explicitly refreshes the shared policy decision. `get_cursor_count()` returns the active count and `get_cursors()` returns a detached snapshot; after `disable()` these probes return empty values without recreating cursor state.
 
 ## Platform notes and limitations
 

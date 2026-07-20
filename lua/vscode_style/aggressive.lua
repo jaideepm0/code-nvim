@@ -2,6 +2,7 @@ local M = {}
 
 local state
 local actions
+local eligibility = require('vscode_style.eligibility')
 local runtime = {
   enabled = false,
   suspended = {},
@@ -10,8 +11,7 @@ local runtime = {
   mappings = {},
   group = nil,
   commands = {},
-  excluded_buftypes = {},
-  excluded_filetypes = {},
+  policy = {},
   generation = 0,
   pending_enters = {},
 }
@@ -105,35 +105,6 @@ local function global_maps()
   return ok and keymap_index(result) or {}
 end
 
-local function set_from_list(values)
-  local result = {}
-  for _, value in ipairs(values or {}) do
-    result[value] = true
-  end
-  return result
-end
-
-local function window_is_floating(winid)
-  if not winid or not vim.api.nvim_win_is_valid(winid) then
-    return false
-  end
-  local ok, win_config = pcall(vim.api.nvim_win_get_config, winid)
-  return ok and win_config.relative and win_config.relative ~= ''
-end
-
-local function window_for_buffer(bufnr)
-  local current = vim.api.nvim_get_current_win()
-  if vim.api.nvim_win_get_buf(current) == bufnr then
-    return current
-  end
-  for _, winid in ipairs(vim.api.nvim_list_wins()) do
-    if vim.api.nvim_win_is_valid(winid) and vim.api.nvim_win_get_buf(winid) == bufnr then
-      return winid
-    end
-  end
-  return 0
-end
-
 function M.should_attach(bufnr, winid)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   winid = winid or vim.api.nvim_get_current_win()
@@ -148,17 +119,11 @@ function M.should_attach(bufnr, winid)
   local forced = vim.b[bufnr].vscode_style_aggressive_enable
   local eligible = true
   if not forced then
-    if not vim.bo[bufnr].modifiable or vim.bo[bufnr].readonly then
-      eligible = false
-    end
-    if runtime.excluded_buftypes[vim.bo[bufnr].buftype] then
-      eligible = false
-    end
-    if runtime.excluded_filetypes[vim.bo[bufnr].filetype] then
-      eligible = false
-    end
-    if not cfg.allow_floating and window_is_floating(winid) then
-      eligible = false
+    local err
+    eligible, err = eligibility.evaluate(runtime.policy, bufnr, winid, 'aggressive')
+    if err then
+      notify(vim.log.levels.WARN, 'vscode_style buffer policy failed: ' .. tostring(err))
+      return false
     end
   end
   if type(cfg.should_attach) == 'function' then
@@ -537,7 +502,7 @@ function M.resume(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   runtime.suspended[bufnr] = nil
   runtime.normal_sessions[bufnr] = nil
-  if runtime.enabled and M.attach_buffer(bufnr, window_for_buffer(bufnr)) then
+  if runtime.enabled and M.attach_buffer(bufnr, eligibility.window_for_buffer(bufnr)) then
     enter_editor(bufnr)
   end
 end
@@ -592,8 +557,12 @@ function M.setup(plugin_state, action_module)
   M.teardown()
   state = plugin_state
   actions = action_module
-  runtime.excluded_buftypes = set_from_list(config().exclude_buftypes)
-  runtime.excluded_filetypes = set_from_list(config().exclude_filetypes)
+  runtime.policy = {
+    allow_floating = config().allow_floating,
+    excluded_buftypes = eligibility.to_set(config().exclude_buftypes),
+    excluded_filetypes = eligibility.to_set(config().exclude_filetypes),
+    should_handle = config().should_handle,
+  }
   create_commands()
   if config().enabled then
     M.enable()

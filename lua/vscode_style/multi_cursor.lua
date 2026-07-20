@@ -694,9 +694,9 @@ function M.current_generation()
   return state and state.generation or 0
 end
 
-function M.snapshot()
+local function snapshot_cursors(cursors)
   local snapshot = {}
-  for _, cursor in ipairs(M.iter()) do
+  for _, cursor in ipairs(cursors) do
     snapshot[#snapshot + 1] = {
       line = cursor.line,
       col = cursor.col,
@@ -707,6 +707,32 @@ function M.snapshot()
     }
   end
   return snapshot
+end
+
+function M.peek_snapshot()
+  ensure_namespace()
+  local bufnr = current_buf()
+  local cursors
+  if state.current_buf == bufnr then
+    cursors = state.cursors
+  elseif state.buffer_states and state.buffer_states[bufnr] then
+    cursors = state.buffer_states[bufnr].cursors
+  end
+  return snapshot_cursors(cursors or {})
+end
+
+function M.peek_count()
+  ensure_namespace()
+  local bufnr = current_buf()
+  if state.current_buf == bufnr then
+    return #state.cursors
+  end
+  local buffer_state = state.buffer_states and state.buffer_states[bufnr]
+  return buffer_state and #buffer_state.cursors or 0
+end
+
+function M.snapshot()
+  return snapshot_cursors(M.iter())
 end
 
 function M.save_snapshot()

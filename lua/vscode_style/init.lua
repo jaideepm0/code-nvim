@@ -2,6 +2,7 @@ local config_module = require('vscode_style.config')
 local actions = require('vscode_style.actions')
 local multi_cursor = require('vscode_style.multi_cursor')
 local aggressive = require('vscode_style.aggressive')
+local eligibility = require('vscode_style.eligibility')
 
 local M = {}
 
@@ -16,6 +17,8 @@ local state = {
   applied_keymaps = {},
   keymap_restore = {},
   buffer_states = {},
+  regular_buffers = {},
+  enabled = false,
 }
 
 local selection_keymaps_active = {}
@@ -177,11 +180,39 @@ local function make_action_callback(spec)
   end
 end
 
+local function refresh_regular_buffer(bufnr, winid)
+  if not state.enabled or not state.config then
+    return false
+  end
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  winid = winid or vim.api.nvim_get_current_win()
+  local eligible, err = eligibility.evaluate(state.buffer_policy, bufnr, winid, 'regular')
+  if err then
+    notify(vim.log.levels.WARN, 'vscode_style buffer policy failed: ' .. tostring(err))
+  end
+  state.regular_buffers[bufnr] = eligible == true
+  return eligible == true
+end
+
+local function buffer_is_active(bufnr)
+  if not state.enabled then
+    return false
+  end
+  if aggressive.is_enabled() then
+    return aggressive.is_active(bufnr)
+  end
+  local active = state.regular_buffers[bufnr]
+  if active == nil then
+    active = refresh_regular_buffer(bufnr, vim.api.nvim_get_current_win())
+  end
+  return active == true
+end
+
 local function scoped_action_callback(callback, lhs)
   return function()
-    -- Aggressive mode deliberately yields in prompt, terminal, floating, and
-    -- other excluded UI buffers even though the core mappings are global.
-    if aggressive.is_enabled() and not aggressive.is_active(vim.api.nvim_get_current_buf()) then
+    -- Core mappings can be global, but simulated editing must yield in prompt,
+    -- terminal, floating, read-only, and other plugin-owned buffers.
+    if not buffer_is_active(vim.api.nvim_get_current_buf()) then
       local keys = vim.api.nvim_replace_termcodes(lhs, true, false, true)
       vim.api.nvim_feedkeys(keys, 'n', false)
       return
@@ -264,11 +295,28 @@ local function setup_autocommands()
   end
   state.autocmd_group = vim.api.nvim_create_augroup('VscodeStyleInsert', { clear = true })
 
+  vim.api.nvim_create_autocmd({ 'BufEnter', 'WinEnter', 'FileType' }, {
+    group = state.autocmd_group,
+    callback = function(args)
+      refresh_regular_buffer(args.buf, vim.api.nvim_get_current_win())
+    end,
+  })
+
+  vim.api.nvim_create_autocmd('OptionSet', {
+    group = state.autocmd_group,
+    pattern = { 'buftype', 'modifiable', 'readonly' },
+    callback = function()
+      refresh_regular_buffer(vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win())
+    end,
+  })
+
   if state.config.autocommands.insert_char_pre then
     vim.api.nvim_create_autocmd('InsertCharPre', {
       group = state.autocmd_group,
       callback = function()
-        actions.on_insert_pre()
+        if buffer_is_active(vim.api.nvim_get_current_buf()) then
+          actions.on_insert_pre()
+        end
       end,
     })
   end
@@ -278,8 +326,10 @@ local function setup_autocommands()
       group = state.autocmd_group,
       callback = function(args)
         M.deactivate_selection_keymaps(args.buf)
-        multi_cursor.clear_all_selections()
-        multi_cursor.update_highlights()
+        if buffer_is_active(args.buf) then
+          multi_cursor.clear_all_selections()
+          multi_cursor.update_highlights()
+        end
       end,
     })
   end
@@ -294,26 +344,31 @@ local function setup_autocommands()
     vim.api.nvim_create_autocmd('BufEnter', {
       group = state.autocmd_group,
       callback = function()
-        multi_cursor.switch_buffer()
+        if buffer_is_active(vim.api.nvim_get_current_buf()) then
+          multi_cursor.switch_buffer()
+        end
       end,
     })
   end
 
-  if state.config.autocommands.buf_cleanup then
-    vim.api.nvim_create_autocmd('BufWipeout', {
-      group = state.autocmd_group,
-      callback = function(args)
+  vim.api.nvim_create_autocmd('BufWipeout', {
+    group = state.autocmd_group,
+    callback = function(args)
+      state.regular_buffers[args.buf] = nil
+      if state.config.autocommands.buf_cleanup then
         M.deactivate_selection_keymaps(args.buf)
         multi_cursor.cleanup_buffer(args.buf)
-      end,
-    })
-  end
+      end
+    end,
+  })
 
   if state.config.autocommands.cursor_moved_i then
     vim.api.nvim_create_autocmd('CursorMovedI', {
       group = state.autocmd_group,
       callback = function()
-        actions.on_cursor_moved_i()
+        if buffer_is_active(vim.api.nvim_get_current_buf()) then
+          actions.on_cursor_moved_i()
+        end
       end,
     })
   end
@@ -343,6 +398,14 @@ function M.setup(user_config)
   end
 
   apply_config(user_config)
+  state.enabled = true
+  state.regular_buffers = {}
+  state.buffer_policy = {
+    allow_floating = state.config.buffer_policy.allow_floating,
+    excluded_buftypes = eligibility.to_set(state.config.buffer_policy.exclude_buftypes),
+    excluded_filetypes = eligibility.to_set(state.config.buffer_policy.exclude_filetypes),
+    should_handle = state.config.buffer_policy.should_handle,
+  }
 
   if not state.ns then
     state.ns = vim.api.nvim_create_namespace('vscode_style')
@@ -360,6 +423,7 @@ function M.setup(user_config)
   actions.setup(state, multi_cursor)
 
   setup_autocommands()
+  refresh_regular_buffer(vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win())
   apply_keymaps()
   aggressive.setup(state, actions)
 end
@@ -369,15 +433,49 @@ function M.get_state()
 end
 
 function M.get_cursors()
+  if not state.enabled then
+    return {}
+  end
+  if not buffer_is_active(vim.api.nvim_get_current_buf()) then
+    return multi_cursor.peek_snapshot()
+  end
   return multi_cursor.get_cursors()
 end
 
 function M.get_cursor_count()
+  if not state.enabled then
+    return 0
+  end
+  if not buffer_is_active(vim.api.nvim_get_current_buf()) then
+    return multi_cursor.peek_count()
+  end
   return #multi_cursor.iter()
 end
 
+function M.is_enabled()
+  return state.enabled == true
+end
+
+function M.is_buffer_eligible(bufnr, winid)
+  if not state.enabled then
+    return false
+  end
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  winid = winid or eligibility.window_for_buffer(bufnr)
+  return refresh_regular_buffer(bufnr, winid)
+end
+
+function M.is_buffer_active(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  return buffer_is_active(bufnr)
+end
+
 function M.enable_aggressive_mode()
+  if not state.enabled then
+    return false
+  end
   aggressive.enable()
+  return true
 end
 
 function M.disable_aggressive_mode()
@@ -431,6 +529,9 @@ local function set_selection_delete_keymap(bufnr, lhs)
 end
 
 function M.activate_selection_keymaps(bufnr)
+  if not state.enabled then
+    return
+  end
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return
@@ -477,6 +578,11 @@ function M.deactivate_selection_keymaps(bufnr)
 end
 
 function M.disable()
+  if not state.enabled then
+    aggressive.teardown()
+    return
+  end
+  state.enabled = false
   aggressive.teardown()
   local active_buffers = vim.tbl_keys(selection_keymaps_active)
   for _, bufnr in ipairs(active_buffers) do
@@ -492,6 +598,7 @@ function M.disable()
   state.clipboard_payload = nil
   state.column_selecting = false
   state.column_anchor = nil
+  state.regular_buffers = {}
 end
 
 return M

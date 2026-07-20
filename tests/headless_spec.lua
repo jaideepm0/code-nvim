@@ -41,6 +41,15 @@ local function get_buf_map(bufnr, lhs)
   return nil
 end
 
+local function get_global_map(lhs)
+  for _, map in ipairs(vim.api.nvim_get_keymap('i')) do
+    if map.lhs == lhs then
+      return map
+    end
+  end
+  return nil
+end
+
 local function cleanup_buf_maps(bufnr, lhses)
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return
@@ -69,6 +78,7 @@ local function fresh_plugin()
     'vscode_style.actions',
     'vscode_style.aggressive',
     'vscode_style.config',
+    'vscode_style.eligibility',
     'vscode_style.multi_cursor',
     'vscode_style.util',
   }) do
@@ -568,6 +578,124 @@ test('setup tolerates a non-table configuration value', function()
   plugin.setup('invalid configuration')
   assert_eq(plugin.get_state().config.max_cursors, 32)
   plugin.disable()
+end)
+
+test('regular global mappings yield safely in excluded buffers', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'plugin prompt' })
+  plugin.setup({
+    mapping_strategy = 'force',
+    notify = false,
+    keymaps = { select_character_right = { lhs = '<F18>' } },
+  })
+  local map = get_global_map('<F18>')
+  assert_true(map and type(map.callback) == 'function')
+  local original_feedkeys = vim.api.nvim_feedkeys
+  local fallback_calls = 0
+  vim.api.nvim_feedkeys = function(...)
+    fallback_calls = fallback_calls + 1
+    return original_feedkeys(...)
+  end
+
+  map.callback()
+  vim.api.nvim_feedkeys = original_feedkeys
+  vim.api.nvim_exec_autocmds('BufEnter', { buffer = bufnr })
+  vim.api.nvim_exec_autocmds('CursorMovedI', { buffer = bufnr })
+  vim.api.nvim_exec_autocmds('InsertLeave', { buffer = bufnr })
+  assert_eq(plugin.get_cursors(), {})
+  assert_eq(plugin.get_cursor_count(), 0)
+
+  assert_eq(fallback_calls, 1, 'excluded regular buffers should receive native fallback input')
+  assert_eq(#plugin.get_state().cursors, 0, 'fallback dispatch should not initialize simulated cursor state')
+  assert_eq(plugin.get_state().buffer_states[bufnr], nil, 'core autocmds should leave excluded buffers untouched')
+  assert_true(not plugin.is_buffer_active(bufnr))
+  plugin.disable()
+end)
+
+test('shared buffer policy can opt a regular special buffer in without hot-path reevaluation', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'special editor' })
+  vim.api.nvim_win_set_cursor(0, { 1, 0 })
+  local policy_calls = 0
+  plugin.setup({
+    mapping_strategy = 'force',
+    notify = false,
+    buffer_policy = {
+      should_handle = function(candidate, _, context)
+        policy_calls = policy_calls + 1
+        return candidate == bufnr and context == 'regular'
+      end,
+    },
+    keymaps = { select_character_right = { lhs = '<F18>' } },
+  })
+  local calls_after_setup = policy_calls
+  local map = get_global_map('<F18>')
+
+  map.callback()
+  map.callback()
+
+  assert_eq(policy_calls, calls_after_setup, 'cached regular dispatch should not rerun user policy on every key')
+  assert_true(plugin.get_cursors()[1].selection ~= nil)
+  assert_true(plugin.is_buffer_active(bufnr))
+  plugin.disable()
+end)
+
+test('shared buffer policy is applied consistently to regular and aggressive lifecycles', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha' })
+  local contexts = {}
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    buffer_policy = {
+      should_handle = function(_, _, context)
+        contexts[context] = true
+      end,
+    },
+    aggressive = { enabled = true, auto_insert = false },
+  })
+
+  assert_true(contexts.regular, 'regular lifecycle should consult the shared policy')
+  assert_true(contexts.aggressive, 'aggressive lifecycle should consult the shared policy')
+  assert_true(plugin.is_buffer_active(bufnr))
+  plugin.disable()
+end)
+
+test('regular eligibility cache follows editable option changes', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha' })
+  plugin.setup({ mapping_strategy = 'skip', notify = false })
+  assert_true(plugin.is_buffer_active(bufnr))
+
+  vim.bo[bufnr].readonly = true
+  vim.api.nvim_exec_autocmds('OptionSet', { pattern = 'readonly' })
+  assert_true(not plugin.is_buffer_active(bufnr))
+
+  vim.bo[bufnr].readonly = false
+  vim.api.nvim_exec_autocmds('OptionSet', { pattern = 'readonly' })
+  assert_true(plugin.is_buffer_active(bufnr))
+  plugin.disable()
+end)
+
+test('disabled public probes do not recreate cursor state or aggressive mode', function()
+  local env = setup_buffer({ 'alpha' }, { cursor = { 1, 1 } })
+  env.multi_cursor.add_cursor_at(0, 3)
+  env.plugin.disable()
+
+  assert_true(not env.plugin.is_enabled())
+  assert_eq(env.plugin.get_cursors(), {})
+  assert_eq(env.plugin.get_cursor_count(), 0)
+  assert_true(not env.plugin.is_buffer_active(env.bufnr))
+  assert_true(not env.plugin.enable_aggressive_mode())
+  assert_eq(next(env.plugin.get_state().buffer_states), nil, 'read-only probes must not recreate buffer state')
 end)
 
 test('select-all occurrence scanning respects max_cursors', function()
