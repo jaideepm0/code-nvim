@@ -480,6 +480,44 @@ test('secondary cursors have a visible extmark overlay', function()
   assert_eq(details.virt_text_pos, 'overlay')
 end)
 
+test('cursor refresh batches extmark position reads', function()
+  local env = setup_buffer({ string.rep('x', 80) }, { cursor = { 1, 0 } })
+  for col = 2, 40, 2 do
+    env.multi_cursor.add_cursor_at(0, col)
+  end
+
+  local original_bulk = vim.api.nvim_buf_get_extmarks
+  local original_single = vim.api.nvim_buf_get_extmark_by_id
+  local bulk_reads, single_reads = 0, 0
+  vim.api.nvim_buf_get_extmarks = function(...)
+    bulk_reads = bulk_reads + 1
+    return original_bulk(...)
+  end
+  vim.api.nvim_buf_get_extmark_by_id = function(...)
+    single_reads = single_reads + 1
+    return original_single(...)
+  end
+  env.multi_cursor.refresh_from_extmarks()
+  vim.api.nvim_buf_get_extmarks = original_bulk
+  vim.api.nvim_buf_get_extmark_by_id = original_single
+
+  assert_eq(bulk_reads, 1, 'one namespace traversal should synchronize every cursor')
+  assert_eq(single_reads, 0, 'cursor synchronization should not issue one API call per cursor')
+end)
+
+test('cursor refresh follows extmark gravity after external edits', function()
+  local env = setup_buffer({ 'abcdef' }, { cursor = { 1, 1 } })
+  env.multi_cursor.add_cursor_at(0, 4)
+  vim.api.nvim_buf_set_text(env.bufnr, 0, 0, 0, 0, { 'ZZ' })
+
+  env.multi_cursor.refresh_from_extmarks()
+
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 0, col = 3 },
+    { line = 0, col = 6 },
+  })
+end)
+
 test('disable does not delete a mapping replaced by the user after setup', function()
   local plugin = fresh_plugin()
   plugin.setup({

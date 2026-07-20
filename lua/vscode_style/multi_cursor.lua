@@ -151,20 +151,31 @@ local function sanitize_selection(cursor)
   end
 end
 
-local function sync_cursor_from_extmark(cursor)
-  local pos = vim.api.nvim_buf_get_extmark_by_id(buf(), state.ns, cursor.id, {})
-  if pos and pos[1] then
-    cursor.line = pos[1]
-    cursor.col = pos[2]
-  else
-    -- Extmark missing; recreate at win cursor
-    local current = vim.api.nvim_win_get_cursor(0)
-    cursor.line = current[1] - 1
-    cursor.col = current[2]
-    cursor.id = vim.api.nvim_buf_set_extmark(buf(), state.ns, cursor.line, cursor.col, {
-      id = cursor.id,
-      right_gravity = true,
-    })
+local function sync_cursors_from_extmarks(cursors)
+  local buf_handle = buf()
+  local positions = {}
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf_handle, state.ns, 0, -1, {})) do
+    positions[mark[1]] = mark
+  end
+  for _, cursor in ipairs(cursors) do
+    local pos = positions[cursor.id]
+    if pos then
+      cursor.line = pos[2]
+      cursor.col = pos[3]
+    else
+      -- Preserve the last logical position if another plugin cleared our
+      -- namespace, instead of collapsing every missing cursor onto the real
+      -- window cursor.
+      cursor.line, cursor.col = sanitize_position(cursor)
+      local line_text = vim.api.nvim_buf_get_lines(buf_handle, cursor.line, cursor.line + 1, true)[1] or ''
+      cursor.id = vim.api.nvim_buf_set_extmark(
+        buf_handle,
+        state.ns,
+        cursor.line,
+        cursor.col,
+        cursor_mark_opts(cursor.is_primary, line_text, cursor.col, cursor.id)
+      )
+    end
   end
 end
 
@@ -343,9 +354,7 @@ function M.sync_cursors()
   local win_line = math.max(win_pos[1], 1) - 1
   local win_col = math.max(win_pos[2], 0)
   M.ensure_primary_cursor_at(win_line, win_col)
-  for _, cursor in ipairs(state.cursors) do
-    sync_cursor_from_extmark(cursor)
-  end
+  sync_cursors_from_extmarks(state.cursors)
   sort_cursors()
   local primary
   for _, cur in ipairs(state.cursors) do
@@ -368,9 +377,7 @@ function M.refresh_from_extmarks()
   if #state.cursors == 0 then
     ensure_primary()
   end
-  for _, cursor in ipairs(state.cursors) do
-    sync_cursor_from_extmark(cursor)
-  end
+  sync_cursors_from_extmarks(state.cursors)
   sort_cursors()
   local primary
   for _, cur in ipairs(state.cursors) do
