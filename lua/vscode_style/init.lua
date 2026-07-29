@@ -124,15 +124,18 @@ buffer_local_maparg = function(bufnr, lhs)
   if not (bufnr and vim.api.nvim_buf_is_valid(bufnr)) then
     return nil
   end
-  local ok, result = pcall(vim.api.nvim_buf_call, bufnr, function()
-    local existing = vim.fn.maparg(lhs, 'i', false, true)
-    if type(existing) == 'table' and existing.lhs ~= '' and existing.buffer == 1 then
+  -- nvim_buf_call cannot marshal function-bearing maparg tables on Neovim
+  -- 0.9. nvim_buf_get_keymap is buffer-scoped already and works across the
+  -- supported versions without changing the current buffer.
+  local ok, mappings = pcall(vim.api.nvim_buf_get_keymap, bufnr, 'i')
+  if not ok then
+    return nil
+  end
+  local wanted = canonical_lhs(lhs)
+  for _, existing in ipairs(mappings or {}) do
+    if existing.lhs ~= '' and canonical_lhs(existing.lhs) == wanted then
       return existing
     end
-    return nil
-  end)
-  if ok then
-    return result
   end
   return nil
 end
