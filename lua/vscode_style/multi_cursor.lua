@@ -57,6 +57,16 @@ local function cursor_mark_opts(is_primary, line_text, col, id)
   return opts
 end
 
+local function selection_anchor_mark_opts(id)
+  return {
+    id = id,
+    -- Keep an anchor before text inserted exactly at the selection start.
+    -- The active endpoint is represented by the cursor mark and uses the
+    -- normal right-gravity behavior.
+    right_gravity = false,
+  }
+end
+
 local function render_cursor(cursor)
   local bufnr = cursor.bufnr or buf()
   if not vim.api.nvim_buf_is_valid(bufnr) then
@@ -119,6 +129,10 @@ end
 local function delete_cursor_marks(cursor)
   delete_highlight(cursor)
   local bufnr = cursor.bufnr or buf()
+  if cursor.anchor_id and vim.api.nvim_buf_is_valid(bufnr) then
+    pcall(vim.api.nvim_buf_del_extmark, bufnr, state.ns, cursor.anchor_id)
+    cursor.anchor_id = nil
+  end
   if cursor.id and vim.api.nvim_buf_is_valid(bufnr) then
     pcall(vim.api.nvim_buf_del_extmark, bufnr, state.ns, cursor.id)
   end
@@ -160,13 +174,19 @@ local function sync_cursors_from_extmarks(cursors)
   for _, cursor in ipairs(cursors) do
     local pos = positions[cursor.id]
     if pos then
-      cursor.line = pos[2]
-      cursor.col = pos[3]
+      local line, col = sanitize_position({ line = pos[2], col = pos[3] })
+      if line ~= pos[2] or col ~= pos[3] then
+        cursor.line, cursor.col = line, col
+        render_cursor(cursor)
+      else
+        cursor.line, cursor.col = line, col
+      end
     else
       -- Preserve the last logical position if another plugin cleared our
       -- namespace, instead of collapsing every missing cursor onto the real
       -- window cursor.
-      cursor.line, cursor.col = sanitize_position(cursor)
+      local fallback = cursor.selection and cursor.selection.active or cursor
+      cursor.line, cursor.col = sanitize_position(fallback)
       local line_text = vim.api.nvim_buf_get_lines(buf_handle, cursor.line, cursor.line + 1, true)[1] or ''
       cursor.id = vim.api.nvim_buf_set_extmark(
         buf_handle,
@@ -175,6 +195,36 @@ local function sync_cursors_from_extmarks(cursors)
         cursor.col,
         cursor_mark_opts(cursor.is_primary, line_text, cursor.col, cursor.id)
       )
+    end
+    if cursor.selection then
+      local anchor_pos = cursor.anchor_id and positions[cursor.anchor_id]
+      if anchor_pos then
+        local anchor_line, anchor_col = sanitize_position({ line = anchor_pos[2], col = anchor_pos[3] })
+        cursor.anchor = { line = anchor_line, col = anchor_col }
+        if anchor_line ~= anchor_pos[2] or anchor_col ~= anchor_pos[3] then
+          cursor.anchor_id = vim.api.nvim_buf_set_extmark(
+            buf_handle,
+            state.ns,
+            anchor_line,
+            anchor_col,
+            selection_anchor_mark_opts(cursor.anchor_id)
+          )
+        end
+      else
+        cursor.anchor = cursor.anchor or { line = cursor.line, col = cursor.col }
+        local anchor_line, anchor_col = sanitize_position(cursor.anchor)
+        cursor.anchor_id = vim.api.nvim_buf_set_extmark(
+          buf_handle,
+          state.ns,
+          anchor_line,
+          anchor_col,
+          selection_anchor_mark_opts(cursor.anchor_id)
+        )
+        cursor.anchor = { line = anchor_line, col = anchor_col }
+      end
+      cursor.selection.anchor = { line = cursor.anchor.line, col = cursor.anchor.col }
+      cursor.selection.active = { line = cursor.line, col = cursor.col }
+      sanitize_selection(cursor)
     end
   end
 end
@@ -233,6 +283,7 @@ local function ensure_primary()
   if primary_changed and primary then
     render_cursor(primary)
   end
+  return primary
 end
 
 local function normalized_range(anchor, active)
@@ -255,6 +306,14 @@ local function apply_highlight(cursor)
   sanitize_selection(cursor)
   local anchor, active = cursor.selection.anchor, cursor.selection.active
   local start_pos, end_pos = normalized_range(anchor, active)
+
+  cursor.anchor_id = vim.api.nvim_buf_set_extmark(
+    buf(),
+    state.ns,
+    anchor.line,
+    anchor.col,
+    selection_anchor_mark_opts(cursor.anchor_id)
+  )
 
   local hl = state.config and state.config.selection_hl
   if hl == false then
@@ -353,7 +412,13 @@ function M.sync_cursors()
   ensure_primary()
   local win_line = math.max(win_pos[1], 1) - 1
   local win_col = math.max(win_pos[2], 0)
-  M.ensure_primary_cursor_at(win_line, win_col)
+  local selected_primary = M.primary()
+  -- A selected endpoint can legally sit one byte past the last character,
+  -- while Normal-mode window coordinates are clamped to the last character.
+  -- Do not replace that logical endpoint with the clamped window position.
+  if not (selected_primary and selected_primary.selection) then
+    M.ensure_primary_cursor_at(win_line, win_col)
+  end
   sync_cursors_from_extmarks(state.cursors)
   sort_cursors()
   local primary
@@ -371,7 +436,8 @@ function M.sync_cursors()
   end
 end
 
-function M.refresh_from_extmarks()
+function M.refresh_from_extmarks(opts)
+  opts = opts or {}
   ensure_namespace()
   M.switch_buffer()
   if #state.cursors == 0 then
@@ -387,7 +453,7 @@ function M.refresh_from_extmarks()
     end
   end
   primary = primary or state.cursors[1]
-  if primary then
+  if primary and opts.set_window ~= false then
     local line, col = sanitize_position({ line = primary.line, col = primary.col })
     primary.line = line
     primary.col = col
@@ -464,6 +530,10 @@ function M.update_position(cursor, line, col)
 end
 
 function M.clear_selection(cursor)
+  if cursor.anchor_id and vim.api.nvim_buf_is_valid(cursor.bufnr or buf()) then
+    pcall(vim.api.nvim_buf_del_extmark, cursor.bufnr or buf(), state.ns, cursor.anchor_id)
+  end
+  cursor.anchor_id = nil
   cursor.anchor = nil
   cursor.selection = nil
   cursor.selection_stack = {}
@@ -478,7 +548,9 @@ end
 
 function M.set_selection(cursor, anchor, active, opts)
   opts = opts or {}
-  cursor.anchor = opts.keep_anchor and cursor.anchor or { line = anchor.line, col = anchor.col }
+  if not (opts.keep_anchor and cursor.anchor) then
+    cursor.anchor = { line = anchor.line, col = anchor.col }
+  end
   cursor.selection = {
     anchor = { line = cursor.anchor.line, col = cursor.anchor.col },
     active = { line = active.line, col = active.col },
@@ -576,6 +648,9 @@ function M.ensure_primary_cursor_at(line, col)
     primary = create_cursor(line, col, { is_primary = true })
     table.insert(state.cursors, 1, primary)
   end
+  if primary.selection then
+    return primary
+  end
   primary.is_primary = true
   M.update_position(primary, line, col)
   return primary
@@ -647,7 +722,13 @@ function M.replace_all_cursors(cursor_defs)
     notify(log_levels.WARN, 'Reached maximum cursor count; extra cursors were ignored')
   end
   sort_cursors()
-  ensure_primary()
+  local primary = ensure_primary()
+  if primary then
+    -- Replacing the cursor set is also used by cursor-history restore and
+    -- occurrence selection. Keep Neovim's real caret aligned with whichever
+    -- logical cursor retained primary ownership.
+    vim.api.nvim_win_set_cursor(0, { primary.line + 1, primary.col })
+  end
 end
 
 function M.switch_buffer()
@@ -664,6 +745,21 @@ function M.switch_buffer()
     state.buffer_states[bufnr] = buffer_state
   end
   state.cursors = buffer_state.cursors
+  if #state.cursors > 0 then
+    sync_cursors_from_extmarks(state.cursors)
+    local primary
+    for _, cursor in ipairs(state.cursors) do
+      if cursor.is_primary then
+        primary = cursor
+        break
+      end
+    end
+    primary = primary or state.cursors[1]
+    if primary then
+      local line, col = sanitize_position({ line = primary.line, col = primary.col })
+      vim.api.nvim_win_set_cursor(0, { line + 1, col })
+    end
+  end
   state.generation = (state.generation or 0) + 1
 end
 
@@ -732,7 +828,9 @@ function M.peek_count()
 end
 
 function M.snapshot()
-  return snapshot_cursors(M.iter())
+  -- A getter must not move Neovim's real window cursor as a side effect.
+  M.refresh_from_extmarks({ set_window = false })
+  return snapshot_cursors(state.cursors)
 end
 
 function M.save_snapshot()
@@ -789,6 +887,22 @@ end
 function M.clear_snapshot(bufnr)
   if state and state.snapshots then
     state.snapshots[bufnr or current_buf()] = nil
+  end
+end
+
+function M.clear_selection_stacks(bufnr)
+  if not (state and state.buffer_states) then
+    return
+  end
+  bufnr = bufnr or current_buf()
+  local cursors
+  if state.current_buf == bufnr then
+    cursors = state.cursors
+  elseif state.buffer_states[bufnr] then
+    cursors = state.buffer_states[bufnr].cursors
+  end
+  for _, cursor in ipairs(cursors or {}) do
+    cursor.selection_stack = {}
   end
 end
 

@@ -7,6 +7,7 @@ local runtime = {
   enabled = false,
   suspended = {},
   active = {},
+  active_windows = {},
   normal_sessions = {},
   mappings = {},
   group = nil,
@@ -40,7 +41,7 @@ local definitions = {
   { name = 'redo', lhs = { '<C-y>', '<C-S-z>' }, action = 'redo', desc = 'Redo' },
   { name = 'find', lhs = '<C-f>', action = 'start_search', desc = 'Find' },
   { name = 'save', lhs = '<C-s>', callback = function() M.save() end, desc = 'Save file' },
-  { name = 'cancel', lhs = '<Esc>', callback = function() M.handle_escape() end, desc = 'Dismiss UI or enter Normal mode' },
+  { name = 'cancel', lhs = '<Esc>', callback = function() return M.handle_escape() end, desc = 'Dismiss UI or enter Normal mode' },
   { name = 'suspend', lhs = '<C-M-Esc>', callback = function() M.yield_to_neovim() end, desc = 'Suspend aggressive mode for this buffer' },
   { name = 'primary_click', lhs = '<LeftMouse>', action = 'primary_click', desc = 'Move the primary cursor and clear secondary cursors' },
   { name = 'previous_buffer', lhs = '<C-PageUp>', callback = function() M.switch_buffer('previous') end, desc = 'Previous buffer' },
@@ -143,9 +144,22 @@ function M.is_enabled()
   return runtime.enabled
 end
 
-function M.is_active(bufnr)
+function M.is_active(bufnr, winid)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
-  return runtime.enabled and runtime.active[bufnr] == true and vim.api.nvim_buf_is_valid(bufnr)
+  if not (runtime.enabled and runtime.active[bufnr] == true and vim.api.nvim_buf_is_valid(bufnr)) then
+    return false
+  end
+  winid = winid
+    or (bufnr == vim.api.nvim_get_current_buf() and vim.api.nvim_get_current_win())
+    or eligibility.window_for_buffer(bufnr)
+  local windows = runtime.active_windows[bufnr]
+  if windows and windows[winid] ~= nil then
+    return windows[winid] == true
+  end
+  local eligible = M.should_attach(bufnr, winid)
+  runtime.active_windows[bufnr] = runtime.active_windows[bufnr] or {}
+  runtime.active_windows[bufnr][winid] = eligible == true
+  return eligible == true
 end
 
 function M.is_normal_session(bufnr)
@@ -224,9 +238,11 @@ local function callback_for(bufnr, lhs, definition)
       fallback(lhs)
       return
     end
-    local ok, err = pcall(callback)
+    local ok, result = pcall(callback)
     if not ok then
-      notify(vim.log.levels.ERROR, 'vscode_style aggressive action failed: ' .. tostring(err))
+      notify(vim.log.levels.ERROR, 'vscode_style aggressive action failed: ' .. tostring(result))
+    elseif result == false then
+      fallback(lhs)
     end
   end
 end
@@ -234,6 +250,7 @@ end
 local function detach_buffer(bufnr)
   local entries = runtime.mappings[bufnr]
   runtime.active[bufnr] = nil
+  runtime.active_windows[bufnr] = nil
   if not entries then
     if vim.api.nvim_buf_is_valid(bufnr) then
       vim.b[bufnr].vscode_style_aggressive_active = false
@@ -263,11 +280,15 @@ function M.attach_buffer(bufnr, winid)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   winid = winid or vim.api.nvim_get_current_win()
   if not M.should_attach(bufnr, winid) then
+    runtime.active_windows[bufnr] = runtime.active_windows[bufnr] or {}
+    runtime.active_windows[bufnr][winid] = false
     detach_buffer(bufnr)
     return false
   end
   if runtime.mappings[bufnr] then
     runtime.active[bufnr] = true
+    runtime.active_windows[bufnr] = runtime.active_windows[bufnr] or {}
+    runtime.active_windows[bufnr][winid] = true
     vim.b[bufnr].vscode_style_aggressive_active = true
     return true
   end
@@ -314,6 +335,8 @@ function M.attach_buffer(bufnr, winid)
     end
   end
   runtime.active[bufnr] = true
+  runtime.active_windows[bufnr] = runtime.active_windows[bufnr] or {}
+  runtime.active_windows[bufnr][winid] = true
   vim.b[bufnr].vscode_style_aggressive_active = true
   return true
 end
@@ -455,6 +478,7 @@ local function setup_autocommands()
       runtime.mappings[event.buf] = nil
       runtime.suspended[event.buf] = nil
       runtime.active[event.buf] = nil
+      runtime.active_windows[event.buf] = nil
       runtime.normal_sessions[event.buf] = nil
       runtime.pending_enters[event.buf] = nil
     end,
@@ -494,6 +518,7 @@ function M.disable()
   end
   runtime.suspended = {}
   runtime.active = {}
+  runtime.active_windows = {}
   runtime.normal_sessions = {}
   if runtime.group then
     pcall(vim.api.nvim_del_augroup_by_id, runtime.group)
@@ -601,6 +626,7 @@ function M.teardown()
   runtime.mappings = {}
   runtime.suspended = {}
   runtime.active = {}
+  runtime.active_windows = {}
   runtime.normal_sessions = {}
   runtime.pending_enters = {}
 end
