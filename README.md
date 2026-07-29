@@ -70,10 +70,12 @@ In addition to the selection and multi-cursor bindings above, aggressive mode pr
 | `Ctrl+S`, `Ctrl+F` | Save or enter Neovim's search command line |
 | `Ctrl+PageUp/PageDown` | Switch buffers |
 | `Click` | Move the primary cursor and clear secondary cursors |
-| `Esc` | Dismiss completion/snippets, selections, or secondary cursors without leaving Insert mode |
+| `Esc` | Dismiss completion/snippets or simulated cursor state; when none remains, enter real Normal mode |
 | `Ctrl+Alt+Esc` | Suspend aggressive mode for the buffer and return to regular Neovim |
 
 The controller deliberately does not attach editing mappings to terminal, prompt, help, quickfix, `nofile`, read-only, or floating UI buffers. Terminal buffers are put into terminal-input mode, and returning to an eligible file buffer restores the non-modal editing experience. Buffer-local mappings from completion engines, snippets, and other plugins win by default.
+
+`Esc` is contextual: the first press closes completion or snippets and clears selections/secondary cursors; once there is nothing to dismiss, it opens a temporary real Normal-mode session. Use ordinary `i`, `a`, `o`, or another native Insert command to return to aggressive editing automatically. `Ctrl+Alt+Esc` remains available when you want the buffer to stay suspended across Insert entries.
 
 Repeated `Ctrl+D` wraps through unmatched literal occurrences. `Ctrl+U` walks back the bounded cursor-state history without undoing buffer text. Copying several selections also records their individual payloads, so a paste with the same number of cursors restores each selection one-for-one; external clipboard text continues to paste identically at every cursor.
 
@@ -85,6 +87,7 @@ vscode.enable_aggressive_mode()
 vscode.disable_aggressive_mode()
 vscode.suspend_aggressive_mode() -- current buffer only
 vscode.resume_aggressive_mode()
+vscode.enter_normal_mode() -- temporary; native Insert commands return automatically
 ```
 
 The corresponding commands are `:VscodeStyleAggressiveEnable`, `:VscodeStyleAggressiveDisable`, `:VscodeStyleAggressiveToggle`, `:VscodeStyleAggressiveSuspend`, and `:VscodeStyleAggressiveResume`. `is_aggressive_mode()` and `is_aggressive_buffer()` can be used in a statusline. Mode changes emit the `User VscodeStyleAggressiveModeChanged` event.
@@ -115,12 +118,23 @@ require("vscode_style").setup({
     text_changed = true,
   },
   notify = vim.notify, -- a function, or false
+  buffer_policy = {
+    allow_floating = false,
+    exclude_buftypes = { "acwrite", "help", "nofile", "nowrite", "prompt", "quickfix", "terminal" },
+    exclude_filetypes = { "TelescopePrompt", "lazy", "neo-tree" },
+    should_handle = function(bufnr, winid, context)
+      -- context is "regular" or "aggressive". Return true/false to
+      -- override the defaults, or nil to retain them.
+    end,
+  },
   aggressive = {
     enabled = true,
     auto_insert = true,
+    escape_to_normal = true,
     terminal_startinsert = true,
     mapping_strategy = "respect", -- or "force", scoped per eligible buffer
     clipboard_register = "+",
+    -- These inherit buffer_policy and can be overridden for aggressive mode:
     allow_floating = false,
     exclude_buftypes = { "nofile", "prompt", "quickfix", "terminal" },
     exclude_filetypes = { "TelescopePrompt", "lazy", "neo-tree" },
@@ -148,9 +162,13 @@ require("vscode_style").setup({
 
 `mapping_strategy = "respect"` installs only globally free shortcuts (and respects a target buffer-local mapping when `opts.buffer` is used). `"force"` replaces existing mappings and restores them during the next setup or `disable()` call. `"skip"` installs no persistent mappings, which is useful when another layer calls the action functions directly.
 
+Regular and aggressive dispatch share `buffer_policy`. Even when a regular mapping is global, it yields to Neovim's native key behavior in excluded, unmodifiable, read-only, unloaded, or disallowed floating buffers. Eligibility is cached on buffer/window/filetype events and refreshed when `buftype`, `modifiable`, or `readonly` changes, so user policy callbacks do not run on every keypress.
+
 Individual keymap overrides accept `false`, a replacement `lhs` string/list, or a table containing `enabled`, `lhs`, `opts`, `desc`, `callback`, `action`, and `args`. Use `require("vscode_style.config").keymap_definitions()` to inspect the supported names.
 
 Aggressive keymap overrides use the same `false`, string/list, or `{ enabled, lhs, desc, callback, action, args }` forms under `aggressive.keymaps`. Set `vim.b.vscode_style_aggressive_disable = true` to exclude one buffer, or `vim.b.vscode_style_aggressive_enable = true` to opt a special buffer in. The `respect` strategy never replaces an existing buffer-local or global Insert-mode mapping. The `force` strategy restores displaced buffer-local mappings when aggressive mode detaches, as long as another plugin has not replaced the aggressive mapping in the meantime.
+
+`aggressive.should_attach` is evaluated on buffer/window lifecycle and eligibility-option events, then cached for key dispatch. If external state used by the callback changes independently, call `resume_aggressive_mode(bufnr)` to refresh that buffer's attachment decision.
 
 To remove the plugin's mappings, autocmds, extmarks, and simulated cursors without restarting Neovim:
 
@@ -159,7 +177,7 @@ require("vscode_style").disable()
 ```
 
 Mappings installed or replaced by another plugin after `setup()` are left untouched during cleanup.
-For statuslines or diagnostics, `get_cursor_count()` returns the active count and `get_cursors()` returns a detached snapshot of the per-buffer cursor state.
+For statuslines or diagnostics, `is_enabled()` reports the core lifecycle, `is_buffer_active()` reports the effective regular/aggressive dispatch state, and `is_buffer_eligible()` explicitly refreshes the shared policy decision. `get_cursor_count()` returns the active count and `get_cursors()` returns a detached snapshot; after `disable()` these probes return empty values without recreating cursor state.
 
 ## Platform notes and limitations
 

@@ -570,8 +570,8 @@ local function get_selection_string(selection)
   return table.concat(chunks, '\n')
 end
 
-local function document_index()
-  local lines = vim.api.nvim_buf_get_lines(buf(), 0, -1, false)
+local function multiline_document_index(lines)
+  lines = lines or vim.api.nvim_buf_get_lines(buf(), 0, -1, false)
   local offsets = {}
   local offset = 0
   for index, text in ipairs(lines) do
@@ -599,7 +599,30 @@ local function offset_to_position(lines, offsets, offset)
 end
 
 local function find_next_occurrence(needle, start_line, start_col)
-  local lines, offsets, document = document_index()
+  if not needle:find('\n', 1, true) then
+    local total_lines = line_count()
+    local first_line = clamp(start_line + 1, 1, total_lines)
+    local chunk_size = 256
+    local chunk_start = first_line
+    while chunk_start <= total_lines do
+      local chunk_end = math.min(chunk_start + chunk_size, total_lines + 1)
+      local lines = vim.api.nvim_buf_get_lines(buf(), chunk_start - 1, chunk_end, false)
+      for offset, text in ipairs(lines) do
+        local index = chunk_start + offset - 1
+        local init_col = index == first_line and clamp(start_col, 0, #text) or 0
+        local found_start, found_end = text:find(needle, init_col + 1, true)
+        if found_start then
+          return { line = index - 1, col = found_start - 1 }, { line = index - 1, col = found_end }
+        end
+      end
+      chunk_start = chunk_end
+    end
+    return nil
+  end
+
+  local lines = vim.api.nvim_buf_get_lines(buf(), 0, -1, false)
+  local offsets, document
+  lines, offsets, document = multiline_document_index(lines)
   local line_index = clamp(start_line + 1, 1, #lines)
   local start_offset = offsets[line_index] + clamp(start_col, 0, #lines[line_index])
   local found_start, found_end = document:find(needle, start_offset + 1, true)
@@ -610,8 +633,40 @@ local function find_next_occurrence(needle, start_line, start_col)
 end
 
 local function collect_all_occurrences(needle, limit)
-  local lines, offsets, document = document_index()
   local matches = {}
+  if not needle:find('\n', 1, true) then
+    local total_lines = line_count()
+    local chunk_size = 256
+    local chunk_start = 1
+    while chunk_start <= total_lines do
+      local chunk_end = math.min(chunk_start + chunk_size, total_lines + 1)
+      local lines = vim.api.nvim_buf_get_lines(buf(), chunk_start - 1, chunk_end, false)
+      for offset, text in ipairs(lines) do
+        local index = chunk_start + offset - 1
+        local search_col = 1
+        while #matches < limit do
+          local found_start, found_end = text:find(needle, search_col, true)
+          if not found_start then
+            break
+          end
+          matches[#matches + 1] = {
+            anchor = { line = index - 1, col = found_start - 1 },
+            active = { line = index - 1, col = found_end },
+          }
+          search_col = found_end + 1
+        end
+        if #matches >= limit then
+          return matches
+        end
+      end
+      chunk_start = chunk_end
+    end
+    return matches
+  end
+
+  local lines = vim.api.nvim_buf_get_lines(buf(), 0, -1, false)
+  local offsets, document
+  lines, offsets, document = multiline_document_index(lines)
   local search_offset = 1
   while #matches < limit do
     local found_start, found_end = document:find(needle, search_offset, true)
@@ -740,6 +795,11 @@ function M.cancel_selection()
     end
   end
 
+  if multi_cursor.peek_count and multi_cursor.peek_count() == 0 then
+    vim.cmd('nohlsearch')
+    return false
+  end
+
   multi_cursor.sync_cursors()
   local cursors = multi_cursor.iter()
   local had_extra_state = #cursors > 1
@@ -857,6 +917,9 @@ function M.copy_line(direction)
         cursor_end = math.max(start_pos.line, end_pos.line - (end_pos.col == 0 and 1 or 0))
       end
       if cursor_start >= range.start_line and cursor_end <= range.end_line then
+        -- VS Code leaves the caret on the newly created copy. A downward
+        -- insertion shifts the source block by its length; an upward
+        -- insertion starts at the source row, so the copy needs no shift.
         copy_shifts[cursor] = direction == 'down' and (range.end_line - range.start_line + 1) or 0
       end
     end)
@@ -1015,11 +1078,13 @@ function M.add_selection_to_next_match()
     return
   end
   local cursors = multi_cursor.get_positions()
-  local last = cursors[#cursors]
-  local start_line = last.line
-  local start_col = last.col
-  if last.cursor.selection then
-    local _, end_pos = selection_bounds(last.cursor.selection)
+  -- Ctrl+D advances from the active primary selection. Using the last
+  -- sorted cursor makes the result depend on another secondary cursor's
+  -- location instead of the user's current caret.
+  local start_line = primary.line
+  local start_col = primary.col
+  if primary.selection then
+    local _, end_pos = selection_bounds(primary.selection)
     start_line = end_pos.line
     start_col = end_pos.col
   end
@@ -1091,10 +1156,14 @@ function M.select_all_occurrences()
     return
   end
   local needle
+  local target_start, target_end
   if primary.selection then
     needle = get_selection_string(primary.selection)
+    target_start, target_end = selection_bounds(primary.selection)
   else
-    needle = get_cursor_word(primary)
+    local word, word_start, word_end = get_cursor_word(primary)
+    needle = word
+    target_start, target_end = word_start, word_end
   end
   if not needle or needle == '' then
     return
@@ -1103,8 +1172,54 @@ function M.select_all_occurrences()
   if #matches == 0 then
     return
   end
+  -- The scan intentionally stops at max_cursors + 1 for bounded work. If
+  -- the user's current occurrence is beyond that prefix, retain it in the
+  -- admitted set so Select All never silently drops the active occurrence.
+  local max_cursors = state.config.max_cursors or 32
+  local target_key = string.format(
+    '%d:%d-%d:%d',
+    target_start.line,
+    target_start.col,
+    target_end.line,
+    target_end.col
+  )
+  local target_index
+  for index, match in ipairs(matches) do
+    local key = string.format(
+      '%d:%d-%d:%d',
+      match.anchor.line,
+      match.anchor.col,
+      match.active.line,
+      match.active.col
+    )
+    if key == target_key then
+      target_index = index
+      break
+    end
+  end
+  if target_index and target_index > max_cursors then
+    matches[max_cursors], matches[target_index] = matches[target_index], matches[max_cursors]
+  elseif not target_index and #matches >= max_cursors then
+    matches[max_cursors] = {
+      anchor = copy_pos(target_start),
+      active = copy_pos(target_end),
+    }
+  end
   save_cursor_state()
   local cursor_defs = {}
+  local primary_index
+  for idx, match in ipairs(matches) do
+    if
+      match.anchor.line == target_start.line
+      and match.anchor.col == target_start.col
+      and match.active.line == target_end.line
+      and match.active.col == target_end.col
+    then
+      primary_index = idx
+      break
+    end
+  end
+  primary_index = primary_index or 1
   for idx, match in ipairs(matches) do
     cursor_defs[idx] = {
       line = match.active.line,
@@ -1114,7 +1229,7 @@ function M.select_all_occurrences()
         anchor = copy_pos(match.anchor),
         active = copy_pos(match.active),
       },
-      is_primary = idx == 1,
+      is_primary = idx == primary_index,
     }
   end
   multi_cursor.replace_all_cursors(cursor_defs)
@@ -1242,10 +1357,19 @@ local function delete_selections(selections)
     vim.api.nvim_buf_set_text(buf(), edit.start.line, edit.start.col, edit.finish.line, edit.finish.col, {})
   end
 
+  -- Cursor extmarks track every edit, but the Lua cursor fields do not. Read
+  -- them once in bulk before collapsing the selected cursors so unrelated
+  -- secondary cursors remain attached to their edited text.
+  multi_cursor.refresh_from_extmarks()
+  local collapse_positions = {}
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf(), state.ns, 0, -1, {})) do
+    collapse_positions[mark[1]] = mark
+  end
+
   for _, sel in ipairs(selections) do
-    local position = vim.api.nvim_buf_get_extmark_by_id(buf(), state.ns, sel.collapse_mark, {})
+    local position = collapse_positions[sel.collapse_mark]
     if position and position[1] then
-      sel.collapse = { line = position[1], col = position[2] }
+      sel.collapse = { line = position[2], col = position[3] }
     else
       sel.collapse = copy_pos(sel.start)
     end
@@ -1540,11 +1664,15 @@ local function apply_surround_to_selections(open_char, close_char, selections)
     })
   end
   multi_cursor.sync_cursors()
+  local target_positions = {}
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf(), state.ns, 0, -1, {})) do
+    target_positions[mark[1]] = mark
+  end
   local handled = {}
   for _, entry in ipairs(entries) do
-    local target = vim.api.nvim_buf_get_extmark_by_id(buf(), state.ns, entry.target_mark, {})
-    local new_line = target[1] or entry.selection.start.line
-    local new_col = target[2] or entry.selection.start.col
+    local target = target_positions[entry.target_mark]
+    local new_line = target and target[2] or entry.selection.start.line
+    local new_col = target and target[3] or entry.selection.start.col
     pcall(vim.api.nvim_buf_del_extmark, buf(), state.ns, entry.target_mark)
     for _, cursor in ipairs(entry.cursors) do
       handled[cursor] = true
@@ -1597,12 +1725,8 @@ end
 local function delete_at_cursors(direction)
   multi_cursor.sync_cursors()
   local selections = gather_selections()
-  if #selections == 0 then
-    local cursors = multi_cursor.iter()
-    if #cursors <= 1 then
-      return false
-    end
-    for _, cursor in ipairs(cursors) do
+  for _, cursor in ipairs(multi_cursor.iter()) do
+    if not cursor.selection then
       local start_line, start_col = cursor.line, cursor.col
       local finish_line, finish_col = cursor.line, cursor.col
       if direction == 'left' then
@@ -1643,8 +1767,8 @@ end
 function M.delete_word(direction)
   multi_cursor.sync_cursors()
   local selections = gather_selections()
-  if #selections == 0 then
-    for _, cursor in ipairs(multi_cursor.iter()) do
+  for _, cursor in ipairs(multi_cursor.iter()) do
+    if not cursor.selection then
       local start_line, start_col = cursor.line, cursor.col
       local finish_line, finish_col = cursor.line, cursor.col
       if direction == 'left' then
@@ -1803,20 +1927,23 @@ local function insert_at_live_cursors(target_buf, text, skip)
 end
 
 local function flush_pending_insert(target_buf, pending)
-  if not vim.api.nvim_buf_is_valid(target_buf) then
+  if not vim.api.nvim_buf_is_valid(target_buf) or not vim.api.nvim_buf_is_loaded(target_buf) then
+    if state.pending_inserts and state.pending_inserts[target_buf] == pending then
+      state.pending_inserts[target_buf] = nil
+    end
     return
   end
   if not state.pending_inserts or state.pending_inserts[target_buf] ~= pending then
     return
   end
   state.pending_inserts[target_buf] = nil
-  vim.api.nvim_buf_call(target_buf, function()
+  local call_ok, call_err = pcall(vim.api.nvim_buf_call, target_buf, function()
     local ok, err = pcall(function()
-      if pending.primary then
-        multi_cursor.ensure_primary_cursor_at(pending.primary.line, pending.primary.col)
-      end
       multi_cursor.refresh_from_extmarks()
-      local selections = pending.selections or gather_selections()
+      -- Re-read logical selections after extmark synchronization. The
+      -- InsertCharPre callback is scheduled, so another plugin or an
+      -- external edit may have changed the buffer before this runs.
+      local selections = gather_selections()
       local first = table.remove(pending.chars, 1)
       if not first then
         return
@@ -1846,6 +1973,9 @@ local function flush_pending_insert(target_buf, pending)
       notify(log_levels.ERROR, 'vscode_style insert failed: ' .. tostring(err))
     end
   end)
+  if not call_ok then
+    notify(log_levels.ERROR, 'vscode_style insert context failed: ' .. tostring(call_err))
+  end
 end
 
 local function queue_insert(char)
@@ -1856,11 +1986,8 @@ local function queue_insert(char)
     pending.chars[#pending.chars + 1] = char
     return
   end
-  local cursor = vim.api.nvim_win_get_cursor(0)
   pending = {
     chars = { char },
-    primary = { line = cursor[1] - 1, col = cursor[2] },
-    selections = gather_selections(),
   }
   state.pending_inserts[target_buf] = pending
   vim.schedule(function()
@@ -1969,8 +2096,16 @@ function M.on_cursor_moved_i()
   local cursor_line = cursor_pos[1] - 1
   local cursor_col = cursor_pos[2]
 
+  local active_text = get_line(primary.line)
+  local active_col = primary.col
+  if active_col >= #active_text and #active_text > 0 then
+    active_col = util.prev_codepoint(active_text, #active_text)
+  end
+
   if
-    cursor_line < start_pos.line
+    cursor_line ~= primary.line
+    or cursor_col ~= active_col
+    or cursor_line < start_pos.line
     or cursor_line > end_pos.line
     or (cursor_line == start_pos.line and cursor_col < start_pos.col)
     or (cursor_line == end_pos.line and cursor_col > end_pos.col)

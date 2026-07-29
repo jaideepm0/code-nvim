@@ -41,6 +41,15 @@ local function get_buf_map(bufnr, lhs)
   return nil
 end
 
+local function get_global_map(lhs)
+  for _, map in ipairs(vim.api.nvim_get_keymap('i')) do
+    if map.lhs == lhs then
+      return map
+    end
+  end
+  return nil
+end
+
 local function cleanup_buf_maps(bufnr, lhses)
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return
@@ -69,6 +78,7 @@ local function fresh_plugin()
     'vscode_style.actions',
     'vscode_style.aggressive',
     'vscode_style.config',
+    'vscode_style.eligibility',
     'vscode_style.multi_cursor',
     'vscode_style.util',
   }) do
@@ -173,6 +183,32 @@ test('Ctrl+D wraps to the first unmatched occurrence', function()
   })
   local first = env.multi_cursor.get_positions()[1].cursor.selection
   assert_eq({ first.anchor.col, first.active.col }, { 0, 3 })
+end)
+
+test('Ctrl+D advances from the primary cursor instead of the last sorted cursor', function()
+  local env = setup_buffer({ 'foo foo foo foo' }, { cursor = { 1, 0 } })
+  env.multi_cursor.replace_all_cursors({
+    selected_cursor(0, 0, 0, 3, true),
+    selected_cursor(0, 8, 0, 11, false),
+  })
+
+  env.actions.add_selection_to_next_match()
+
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 0, col = 3 },
+    { line = 0, col = 7 },
+    { line = 0, col = 11 },
+  })
+end)
+
+test('Ctrl+Shift+L keeps the current occurrence as the primary cursor', function()
+  local env = setup_buffer({ 'foo foo foo' }, { cursor = { 1, 5 } })
+
+  env.actions.select_all_occurrences()
+
+  local primary = env.multi_cursor.primary()
+  assert_eq({ primary.line, primary.col }, { 0, 7 })
+  assert_eq({ primary.selection.anchor.col, primary.selection.active.col }, { 4, 7 })
 end)
 
 test('typing with same-line multi-cursors leaves every cursor after its own inserted text', function()
@@ -409,7 +445,7 @@ test('multi-cursor Enter preserves each line indentation', function()
   })
 end)
 
-test('copy-line handles multiple disjoint ranges without shifted source indices', function()
+test('copy-line handles disjoint ranges and moves cursors onto the copies', function()
   local env = setup_buffer({ 'a', 'b', 'c', 'd' }, { cursor = { 2, 0 } })
   env.multi_cursor.add_cursor_at(3, 0)
 
@@ -420,6 +456,15 @@ test('copy-line handles multiple disjoint ranges without shifted source indices'
     { line = 1, col = 0 },
     { line = 4, col = 0 },
   })
+end)
+
+test('copy-line-up keeps a cursor inside the newly inserted copy', function()
+  local env = setup_buffer({ 'a', 'b', 'c' }, { cursor = { 2, 0 } })
+
+  env.actions.copy_line('up')
+
+  assert_eq(lines(), { 'a', 'b', 'b', 'c' })
+  assert_eq(cursor_positions(env.multi_cursor), { { line = 1, col = 0 } })
 end)
 
 test('move-line merges adjacent cursor lines into one stable block', function()
@@ -464,6 +509,17 @@ test('multi-cursor state is isolated and retained per buffer', function()
   vim.api.nvim_set_current_buf(first_buf)
   vim.api.nvim_win_set_cursor(0, { 1, 1 })
   assert_eq(#env.multi_cursor.iter(), 2, 'first buffer cursors should not be discarded by a buffer switch')
+  assert_eq(vim.api.nvim_win_get_cursor(0), { 1, 1 }, 'buffer switch should restore its primary caret')
+end)
+
+test('buffer cleanup discards deferred inserts for the destroyed buffer', function()
+  local env = setup_buffer({ 'alpha' }, { cursor = { 1, 1 } })
+  local pending = { chars = { 'x' } }
+  env.plugin.get_state().pending_inserts[env.bufnr] = pending
+
+  env.multi_cursor.cleanup_buffer(env.bufnr)
+
+  assert_eq(env.plugin.get_state().pending_inserts[env.bufnr], nil)
 end)
 
 test('secondary cursors have a visible extmark overlay', function()
@@ -478,6 +534,143 @@ test('secondary cursors have a visible extmark overlay', function()
 
   assert_eq(details.virt_text[1][2], 'Cursor')
   assert_eq(details.virt_text_pos, 'overlay')
+end)
+
+test('cursor refresh batches extmark position reads', function()
+  local env = setup_buffer({ string.rep('x', 80) }, { cursor = { 1, 0 } })
+  for col = 2, 40, 2 do
+    env.multi_cursor.add_cursor_at(0, col)
+  end
+
+  local original_bulk = vim.api.nvim_buf_get_extmarks
+  local original_single = vim.api.nvim_buf_get_extmark_by_id
+  local bulk_reads, single_reads = 0, 0
+  vim.api.nvim_buf_get_extmarks = function(...)
+    bulk_reads = bulk_reads + 1
+    return original_bulk(...)
+  end
+  vim.api.nvim_buf_get_extmark_by_id = function(...)
+    single_reads = single_reads + 1
+    return original_single(...)
+  end
+  env.multi_cursor.refresh_from_extmarks()
+  vim.api.nvim_buf_get_extmarks = original_bulk
+  vim.api.nvim_buf_get_extmark_by_id = original_single
+
+  assert_eq(bulk_reads, 1, 'one namespace traversal should synchronize every cursor')
+  assert_eq(single_reads, 0, 'cursor synchronization should not issue one API call per cursor')
+end)
+
+test('cursor refresh follows extmark gravity after external edits', function()
+  local env = setup_buffer({ 'abcdef' }, { cursor = { 1, 1 } })
+  env.multi_cursor.add_cursor_at(0, 4)
+  vim.api.nvim_buf_set_text(env.bufnr, 0, 0, 0, 0, { 'ZZ' })
+
+  env.multi_cursor.refresh_from_extmarks()
+
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 0, col = 3 },
+    { line = 0, col = 6 },
+  })
+end)
+
+test('cursor refresh clamps every cursor after external truncation', function()
+  local env = setup_buffer({ 'abcdef' }, { cursor = { 1, 1 } })
+  env.multi_cursor.add_cursor_at(0, 5)
+
+  vim.api.nvim_buf_set_lines(env.bufnr, 0, -1, false, { '' })
+  env.multi_cursor.refresh_from_extmarks()
+  env.actions.insert_text_at_cursors('X')
+
+  assert_eq(lines(), { 'X' })
+  assert_eq(cursor_positions(env.multi_cursor), { { line = 0, col = 1 } })
+end)
+
+test('selection endpoints follow extmark gravity after external edits', function()
+  local env = setup_buffer({ 'abcdef' }, { cursor = { 1, 2 } })
+  env.multi_cursor.replace_all_cursors({
+    selected_cursor(0, 2, 0, 4, true),
+  })
+  vim.api.nvim_buf_set_text(env.bufnr, 0, 0, 0, 0, { 'ZZ' })
+
+  env.multi_cursor.refresh_from_extmarks()
+
+  local selection = env.multi_cursor.primary().selection
+  assert_eq({ selection.anchor.col, selection.active.col }, { 4, 6 })
+  assert_eq(vim.api.nvim_buf_get_text(env.bufnr, 0, 4, 0, 6, {}), { 'cd' })
+end)
+
+test('deleting one selection keeps unrelated cursors attached to edited text', function()
+  local env = setup_buffer({ 'abcdef' }, {
+    cursor = { 1, 1 },
+    config = { aggressive = { enabled = false, clipboard_register = '"' } },
+  })
+  env.multi_cursor.replace_all_cursors({
+    selected_cursor(0, 0, 0, 1, true),
+    { line = 0, col = 4, is_primary = false },
+  })
+
+  local original_single_read = vim.api.nvim_buf_get_extmark_by_id
+  local single_reads = 0
+  vim.api.nvim_buf_get_extmark_by_id = function(...)
+    single_reads = single_reads + 1
+    return original_single_read(...)
+  end
+  env.actions.copy(true)
+  vim.api.nvim_buf_get_extmark_by_id = original_single_read
+
+  assert_eq(lines(), { 'bcdef' })
+  assert_eq(single_reads, 0, 'selection deletion should resolve collapse marks in one bulk traversal')
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 0, col = 0 },
+    { line = 0, col = 3 },
+  })
+end)
+
+test('disabling backspace feature disables both temporary deletion mappings', function()
+  local env = setup_buffer({ 'abc' }, {
+    config = { feature_flags = { backspace = false } },
+  })
+  env.actions.select_character('right')
+
+  assert_eq(get_buf_map(env.bufnr, '<BS>'), nil)
+  assert_eq(get_buf_map(env.bufnr, '<Del>'), nil)
+end)
+
+test('mixed selection and cursor backspace edits every cursor', function()
+  local env = setup_buffer({ 'abcd' }, { cursor = { 1, 1 } })
+  env.multi_cursor.replace_all_cursors({
+    selected_cursor(0, 0, 0, 1, true),
+    { line = 0, col = 3, is_primary = false },
+  })
+
+  env.actions.handle_backspace()
+
+  assert_eq(lines(), { 'bd' })
+end)
+
+test('mixed selection and cursor delete edits every cursor', function()
+  local env = setup_buffer({ 'abcd' }, { cursor = { 1, 1 } })
+  env.multi_cursor.replace_all_cursors({
+    selected_cursor(0, 0, 0, 1, true),
+    { line = 0, col = 2, is_primary = false },
+  })
+
+  env.actions.handle_delete()
+
+  assert_eq(lines(), { 'bd' })
+end)
+
+test('native movement inside a simulated selection collapses it', function()
+  local env = setup_buffer({ 'abcd' }, { cursor = { 1, 1 } })
+  env.multi_cursor.replace_all_cursors({
+    selected_cursor(0, 0, 0, 3, true),
+  })
+  vim.api.nvim_win_set_cursor(0, { 1, 1 })
+
+  env.actions.on_cursor_moved_i()
+
+  assert_eq(env.multi_cursor.primary().selection, nil)
 end)
 
 test('disable does not delete a mapping replaced by the user after setup', function()
@@ -522,6 +715,188 @@ test('setup tolerates a non-table configuration value', function()
   plugin.disable()
 end)
 
+test('regular global mappings yield safely in excluded buffers', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'plugin prompt' })
+  plugin.setup({
+    mapping_strategy = 'force',
+    notify = false,
+    keymaps = { select_character_right = { lhs = '<F18>' } },
+  })
+  local map = get_global_map('<F18>')
+  assert_true(map and type(map.callback) == 'function')
+  local original_feedkeys = vim.api.nvim_feedkeys
+  local fallback_calls = 0
+  vim.api.nvim_feedkeys = function(...)
+    fallback_calls = fallback_calls + 1
+    return original_feedkeys(...)
+  end
+
+  map.callback()
+  vim.api.nvim_feedkeys = original_feedkeys
+  vim.api.nvim_exec_autocmds('BufEnter', { buffer = bufnr })
+  vim.api.nvim_exec_autocmds('CursorMovedI', { buffer = bufnr })
+  vim.api.nvim_exec_autocmds('InsertLeave', { buffer = bufnr })
+  assert_eq(plugin.get_cursors(), {})
+  assert_eq(plugin.get_cursor_count(), 0)
+
+  assert_eq(fallback_calls, 1, 'excluded regular buffers should receive native fallback input')
+  assert_eq(#plugin.get_state().cursors, 0, 'fallback dispatch should not initialize simulated cursor state')
+  assert_eq(plugin.get_state().buffer_states[bufnr], nil, 'core autocmds should leave excluded buffers untouched')
+  assert_true(not plugin.is_buffer_active(bufnr))
+  plugin.disable()
+end)
+
+test('shared buffer policy can opt a regular special buffer in without hot-path reevaluation', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'special editor' })
+  vim.api.nvim_win_set_cursor(0, { 1, 0 })
+  local policy_calls = 0
+  plugin.setup({
+    mapping_strategy = 'force',
+    notify = false,
+    buffer_policy = {
+      should_handle = function(candidate, _, context)
+        policy_calls = policy_calls + 1
+        return candidate == bufnr and context == 'regular'
+      end,
+    },
+    keymaps = { select_character_right = { lhs = '<F18>' } },
+  })
+  local calls_after_setup = policy_calls
+  local map = get_global_map('<F18>')
+
+  map.callback()
+  map.callback()
+
+  assert_eq(policy_calls, calls_after_setup, 'cached regular dispatch should not rerun user policy on every key')
+  assert_true(plugin.get_cursors()[1].selection ~= nil)
+  assert_true(plugin.is_buffer_active(bufnr))
+  plugin.disable()
+end)
+
+test('shared buffer policy is applied consistently to regular and aggressive lifecycles', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha' })
+  local contexts = {}
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    buffer_policy = {
+      should_handle = function(_, _, context)
+        contexts[context] = true
+      end,
+    },
+    aggressive = { enabled = true, auto_insert = false },
+  })
+
+  assert_true(contexts.regular, 'regular lifecycle should consult the shared policy')
+  assert_true(contexts.aggressive, 'aggressive lifecycle should consult the shared policy')
+  assert_true(plugin.is_buffer_active(bufnr))
+  plugin.disable()
+end)
+
+test('regular eligibility cache follows editable option changes', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha' })
+  plugin.setup({ mapping_strategy = 'skip', notify = false })
+  assert_true(plugin.is_buffer_active(bufnr))
+
+  vim.bo[bufnr].readonly = true
+  vim.api.nvim_exec_autocmds('OptionSet', { pattern = 'readonly' })
+  assert_true(not plugin.is_buffer_active(bufnr))
+
+  vim.bo[bufnr].readonly = false
+  vim.api.nvim_exec_autocmds('OptionSet', { pattern = 'readonly' })
+  assert_true(plugin.is_buffer_active(bufnr))
+  plugin.disable()
+end)
+
+test('regular policy resolves a window belonging to a non-current buffer', function()
+  local plugin = fresh_plugin()
+  local file_buf = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(file_buf)
+  vim.api.nvim_buf_set_lines(file_buf, 0, -1, false, { 'alpha' })
+  plugin.setup({ mapping_strategy = 'skip', notify = false })
+  plugin.get_state().regular_buffers[file_buf] = nil
+
+  local ui_buf = vim.api.nvim_create_buf(false, true)
+  local floating = vim.api.nvim_open_win(ui_buf, true, {
+    relative = 'editor',
+    row = 1,
+    col = 1,
+    width = 20,
+    height = 2,
+    style = 'minimal',
+  })
+
+  assert_true(plugin.is_buffer_active(file_buf), 'target file should use its own non-floating window')
+  vim.api.nvim_win_close(floating, true)
+  plugin.disable()
+end)
+
+test('regular eligibility is scoped to the active window', function()
+  local plugin = fresh_plugin()
+  local file_buf = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(file_buf)
+  vim.api.nvim_buf_set_lines(file_buf, 0, -1, false, { 'alpha' })
+  local main_win = vim.api.nvim_get_current_win()
+  plugin.setup({ mapping_strategy = 'skip', notify = false })
+
+  local floating = vim.api.nvim_open_win(file_buf, true, {
+    relative = 'editor',
+    row = 1,
+    col = 1,
+    width = 20,
+    height = 2,
+    style = 'minimal',
+  })
+  assert_true(not plugin.is_buffer_active(file_buf), 'floating windows should not activate regular editing')
+  vim.api.nvim_set_current_win(main_win)
+  assert_true(plugin.is_buffer_active(file_buf), 'the same buffer remains active in its normal window')
+  vim.api.nvim_win_close(floating, true)
+  plugin.disable()
+end)
+
+test('wiped buffers are cleaned even when optional cleanup is disabled', function()
+  local env = setup_buffer({ 'alpha' }, {
+    config = { autocommands = { buf_cleanup = false } },
+  })
+  env.multi_cursor.add_cursor_at(0, 3)
+  local bufnr = env.bufnr
+
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  assert_eq(env.plugin.get_state().buffer_states[bufnr], nil)
+  assert_eq(env.plugin.get_state().regular_buffers[bufnr], nil)
+end)
+
+test('disabled public probes do not recreate cursor state or aggressive mode', function()
+  local env = setup_buffer({ 'alpha' }, { cursor = { 1, 1 } })
+  env.multi_cursor.add_cursor_at(0, 3)
+  env.plugin.disable()
+
+  assert_true(not env.plugin.is_enabled())
+  assert_eq(env.plugin.get_cursors(), {})
+  assert_eq(env.plugin.get_cursor_count(), 0)
+  assert_true(not env.plugin.is_buffer_active(env.bufnr))
+  assert_true(not env.plugin.enable_aggressive_mode())
+  assert_true(not env.plugin.disable_aggressive_mode())
+  assert_true(not env.plugin.toggle_aggressive_mode())
+  assert_true(not env.plugin.suspend_aggressive_mode(env.bufnr))
+  assert_true(not env.plugin.resume_aggressive_mode(env.bufnr))
+  assert_true(not env.plugin.is_aggressive_mode())
+  assert_eq(next(env.plugin.get_state().buffer_states), nil, 'read-only probes must not recreate buffer state')
+end)
+
 test('select-all occurrence scanning respects max_cursors', function()
   local env = setup_buffer({ string.rep('x ', 200) }, {
     cursor = { 1, 0 },
@@ -531,6 +906,35 @@ test('select-all occurrence scanning respects max_cursors', function()
   env.actions.select_all_occurrences()
 
   assert_eq(#env.multi_cursor.get_positions(), 7, 'large match sets should be capped during collection')
+end)
+
+test('select-all occurrence scanning retains the active match at the cap', function()
+  local env = setup_buffer({ 'foo foo foo' }, {
+    cursor = { 1, 9 },
+    config = { max_cursors = 2 },
+  })
+
+  env.actions.select_all_occurrences()
+
+  local primary = env.multi_cursor.primary()
+  assert_eq({ primary.line, primary.col }, { 0, 11 })
+  assert_eq(#env.multi_cursor.get_positions(), 2)
+end)
+
+test('single-line occurrence scanning finds adjacent matches across lines', function()
+  local env = setup_buffer({ 'foofoo', 'xfoo', 'foo' }, { cursor = { 1, 3 } })
+  env.multi_cursor.replace_all_cursors({
+    selected_cursor(0, 0, 0, 3, true),
+  })
+
+  env.actions.select_all_occurrences()
+
+  assert_eq(cursor_positions(env.multi_cursor), {
+    { line = 0, col = 3 },
+    { line = 0, col = 6 },
+    { line = 1, col = 4 },
+    { line = 2, col = 3 },
+  })
 end)
 
 test('aggressive mode attaches ordinary Insert-mode shortcuts only to editable file buffers', function()
@@ -548,6 +952,20 @@ test('aggressive mode attaches ordinary Insert-mode shortcuts only to editable f
   assert_true(get_buf_map(file_buf, '<C-A>'), 'editable file buffer should receive select-all')
   assert_true(plugin.is_aggressive_mode(), 'aggressive controller should report enabled')
   assert_true(plugin.is_aggressive_buffer(file_buf), 'file buffer should report active')
+
+  local main_win = vim.api.nvim_get_current_win()
+  local floating_file = vim.api.nvim_open_win(file_buf, true, {
+    relative = 'editor',
+    row = 1,
+    col = 1,
+    width = 20,
+    height = 2,
+    style = 'minimal',
+  })
+  assert_true(not plugin.is_aggressive_buffer(file_buf), 'aggressive editing should yield in floating windows')
+  vim.api.nvim_set_current_win(main_win)
+  assert_true(plugin.is_aggressive_buffer(file_buf), 'aggressive editing should remain active in normal windows')
+  vim.api.nvim_win_close(floating_file, true)
 
   local ui_buf = vim.api.nvim_create_buf(false, true)
   vim.bo[ui_buf].buftype = 'nofile'
@@ -630,6 +1048,93 @@ test('aggressive buffers can be suspended and resumed without touching core stat
   plugin.disable()
 end)
 
+test('aggressive Escape dismisses cursor state before opening a Normal-mode session', function()
+  local plugin, _, multi_cursor = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha', 'beta' })
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = { enabled = true, auto_insert = false },
+  })
+  multi_cursor.add_cursor_at(1, 0)
+  local escape = get_buf_map(bufnr, '<Esc>')
+  assert_true(escape and type(escape.callback) == 'function')
+
+  escape.callback()
+  assert_eq(#multi_cursor.iter(), 1, 'first Escape should remove secondary cursors')
+  assert_true(not plugin.is_aggressive_normal_mode(bufnr))
+
+  escape.callback()
+  assert_true(plugin.is_aggressive_normal_mode(bufnr), 'second Escape should yield to real Normal mode')
+  assert_true(plugin.is_aggressive_buffer(bufnr), 'temporary Normal mode should keep aggressive attachment ready')
+
+  vim.api.nvim_exec_autocmds('InsertEnter', { buffer = bufnr })
+  assert_true(not plugin.is_aggressive_normal_mode(bufnr), 'native Insert entry should restore aggressive editing')
+  plugin.disable()
+end)
+
+test('aggressive Normal-mode API is safe when inactive and configurable', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha' })
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = { enabled = true, auto_insert = false, escape_to_normal = false },
+  })
+
+  local escape = get_buf_map(bufnr, '<Esc>')
+  local original_feedkeys = vim.api.nvim_feedkeys
+  local feed_count = 0
+  vim.api.nvim_feedkeys = function(...)
+    feed_count = feed_count + 1
+    return original_feedkeys(...)
+  end
+  escape.callback()
+  vim.api.nvim_feedkeys = original_feedkeys
+  assert_eq(feed_count, 1, 'disabled Normal-mode entry should forward Escape natively')
+  assert_true(not plugin.is_aggressive_normal_mode(bufnr), 'escape_to_normal=false should preserve legacy behavior')
+
+  plugin.disable_aggressive_mode()
+  assert_true(not plugin.enter_normal_mode(bufnr), 'inactive aggressive mode should reject Normal-mode sessions')
+  plugin.disable()
+end)
+
+test('clean aggressive Escape suppresses auto-insert without allocating cursor state', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha' })
+  local original_cmd = vim.cmd
+  local startinsert_calls = 0
+  vim.cmd = function(command)
+    if command == 'startinsert' then
+      startinsert_calls = startinsert_calls + 1
+      return
+    end
+    return original_cmd(command)
+  end
+
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = { enabled = true, auto_insert = true },
+  })
+  local escape = get_buf_map(bufnr, '<Esc>')
+  escape.callback()
+  vim.api.nvim_exec_autocmds('InsertLeave', { buffer = bufnr })
+  vim.wait(10)
+  vim.cmd = original_cmd
+
+  assert_true(plugin.is_aggressive_normal_mode(bufnr))
+  assert_eq(startinsert_calls, 0, 'temporary Normal mode must suppress scheduled aggressive re-entry')
+  assert_eq(plugin.get_state().buffer_states[bufnr], nil, 'clean Escape should not allocate multi-cursor state')
+  plugin.disable()
+end)
+
 test('Ctrl+U walks back cursor additions without undoing text', function()
   local env = setup_buffer({ 'one', 'two', 'three' }, { cursor = { 1, 0 } })
   env.actions.add_cursor_vertical('down')
@@ -658,6 +1163,28 @@ test('external text changes invalidate raw cursor-history positions', function()
 
   assert_true(not env.actions.undo_cursor_state())
   assert_eq(#env.multi_cursor.iter(), 2)
+end)
+
+test('completion-menu text changes invalidate raw cursor-history positions', function()
+  local env = setup_buffer({ 'one', 'two' }, { cursor = { 1, 0 } })
+  env.actions.add_cursor_vertical('down')
+  vim.api.nvim_exec_autocmds('TextChangedP', { buffer = env.bufnr })
+
+  assert_true(not env.actions.undo_cursor_state())
+  assert_eq(#env.multi_cursor.iter(), 2)
+end)
+
+test('external text changes invalidate expansion history safely', function()
+  local env = setup_buffer({ 'if', '  child', 'outside' }, { cursor = { 2, 4 } })
+  env.actions.expand_selection()
+  env.actions.expand_selection()
+  env.actions.expand_selection()
+  vim.api.nvim_buf_set_lines(env.bufnr, 0, 1, false, { 'else' })
+  vim.api.nvim_exec_autocmds('TextChanged', { buffer = env.bufnr })
+
+  env.actions.shrink_selection()
+
+  assert_eq(env.multi_cursor.primary().selection, nil)
 end)
 
 test('empty cursor-history stacks are harmless and cleaned up', function()
@@ -761,6 +1288,71 @@ test('aggressive should_attach can explicitly opt an excluded buffer in', functi
 
   assert_true(plugin.is_aggressive_buffer(bufnr))
   assert_true(get_buf_map(bufnr, '<Left>'))
+  plugin.disable()
+end)
+
+test('aggressive key callbacks use cached lifecycle eligibility', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha' })
+  vim.api.nvim_win_set_cursor(0, { 1, 2 })
+  local eligibility_checks = 0
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = {
+      enabled = true,
+      auto_insert = false,
+      should_attach = function(candidate)
+        eligibility_checks = eligibility_checks + 1
+        return candidate == bufnr
+      end,
+    },
+  })
+
+  local checks_after_attach = eligibility_checks
+  local map = get_buf_map(bufnr, '<Left>')
+  assert_true(map and type(map.callback) == 'function')
+  for _ = 1, 10 do
+    map.callback()
+  end
+
+  assert_eq(eligibility_checks, checks_after_attach, 'hot-path key callbacks should not rerun attachment policy')
+  assert_true(plugin.is_aggressive_buffer(bufnr))
+  assert_eq(eligibility_checks, checks_after_attach, 'status checks should read cached active state')
+  plugin.disable()
+end)
+
+test('aggressive setup invalidates stale scheduled Insert-mode transitions', function()
+  local plugin = fresh_plugin()
+  local bufnr = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'alpha' })
+  local original_cmd = vim.cmd
+  local startinsert_calls = 0
+  vim.cmd = function(command)
+    if command == 'startinsert' then
+      startinsert_calls = startinsert_calls + 1
+      return
+    end
+    return original_cmd(command)
+  end
+
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = { enabled = true, auto_insert = true },
+  })
+  plugin.setup({
+    mapping_strategy = 'skip',
+    notify = false,
+    aggressive = { enabled = true, auto_insert = false },
+  })
+  vim.wait(10)
+  vim.cmd = original_cmd
+
+  assert_eq(startinsert_calls, 0, 'a prior setup must not re-enter Insert mode after reconfiguration')
   plugin.disable()
 end)
 

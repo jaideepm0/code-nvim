@@ -271,13 +271,8 @@ local defaults = {
   notify = vim.notify,
 }
 
-local aggressive_defaults = {
-  enabled = false,
-  auto_insert = true,
-  terminal_startinsert = true,
+local buffer_policy_defaults = {
   allow_floating = false,
-  mapping_strategy = 'respect',
-  clipboard_register = '+',
   exclude_buftypes = { 'acwrite', 'help', 'nofile', 'nowrite', 'prompt', 'quickfix', 'terminal' },
   exclude_filetypes = {
     'DressingInput',
@@ -291,6 +286,15 @@ local aggressive_defaults = {
     'notify',
     'oil',
   },
+}
+
+local aggressive_defaults = {
+  enabled = false,
+  auto_insert = true,
+  escape_to_normal = true,
+  terminal_startinsert = true,
+  mapping_strategy = 'respect',
+  clipboard_register = '+',
 }
 
 local function normalize_string_list(value, fallback)
@@ -307,8 +311,22 @@ local function normalize_string_list(value, fallback)
   return result
 end
 
-local function normalize_aggressive(value)
+local function normalize_buffer_policy(value)
+  value = type(value) == 'table' and value or {}
+  return {
+    allow_floating = value.allow_floating == true,
+    exclude_buftypes = normalize_string_list(value.exclude_buftypes, buffer_policy_defaults.exclude_buftypes),
+    exclude_filetypes = normalize_string_list(value.exclude_filetypes, buffer_policy_defaults.exclude_filetypes),
+    should_handle = type(value.should_handle) == 'function' and value.should_handle or nil,
+  }
+end
+
+local function normalize_aggressive(value, buffer_policy)
   local cfg = vim.deepcopy(aggressive_defaults)
+  cfg.allow_floating = buffer_policy.allow_floating
+  cfg.exclude_buftypes = vim.deepcopy(buffer_policy.exclude_buftypes)
+  cfg.exclude_filetypes = vim.deepcopy(buffer_policy.exclude_filetypes)
+  cfg.should_handle = buffer_policy.should_handle
   if value == true then
     cfg.enabled = true
     return cfg
@@ -319,7 +337,7 @@ local function normalize_aggressive(value)
 
   -- Supplying an options table is itself an opt-in unless explicitly disabled.
   cfg.enabled = value.enabled ~= false
-  for _, key in ipairs({ 'auto_insert', 'terminal_startinsert', 'allow_floating' }) do
+  for _, key in ipairs({ 'auto_insert', 'escape_to_normal', 'terminal_startinsert', 'allow_floating' }) do
     if value[key] ~= nil then
       cfg[key] = not not value[key]
     end
@@ -330,8 +348,8 @@ local function normalize_aggressive(value)
   if type(value.clipboard_register) == 'string' and value.clipboard_register ~= '' then
     cfg.clipboard_register = value.clipboard_register
   end
-  cfg.exclude_buftypes = normalize_string_list(value.exclude_buftypes, aggressive_defaults.exclude_buftypes)
-  cfg.exclude_filetypes = normalize_string_list(value.exclude_filetypes, aggressive_defaults.exclude_filetypes)
+  cfg.exclude_buftypes = normalize_string_list(value.exclude_buftypes, buffer_policy.exclude_buftypes)
+  cfg.exclude_filetypes = normalize_string_list(value.exclude_filetypes, buffer_policy.exclude_filetypes)
   cfg.should_attach = type(value.should_attach) == 'function' and value.should_attach or nil
   cfg.keymaps = type(value.keymaps) == 'table' and vim.deepcopy(value.keymaps) or {}
   return cfg
@@ -488,7 +506,8 @@ function M.normalize(user_config)
   cfg.feature_flags = normalize_feature_flags(user_config.mappings, user_config.feature_flags)
   cfg.autocommands = normalize_autocommands(user_config.autocommands)
   cfg.notify = normalize_notify(user_config.notify)
-  cfg.aggressive = normalize_aggressive(user_config.aggressive)
+  cfg.buffer_policy = normalize_buffer_policy(user_config.buffer_policy)
+  cfg.aggressive = normalize_aggressive(user_config.aggressive, cfg.buffer_policy)
 
   local overrides = user_config.keymaps
   if overrides == nil and type(user_config.mappings) == 'table' then

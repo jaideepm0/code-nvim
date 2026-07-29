@@ -1,0 +1,54 @@
+name: Headless tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  headless:
+    name: Neovim ${{ matrix.neovim }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        neovim: [v0.9.5, v0.10.4, v0.11.7, v0.12.4]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Neovim
+        env:
+          NEOVIM_VERSION: ${{ matrix.neovim }}
+        run: |
+          set -euo pipefail
+          if [[ "$NEOVIM_VERSION" == v0.9.* ]]; then
+            asset="nvim-linux64.tar.gz"
+            directory="nvim-linux64"
+          else
+            asset="nvim-linux-x86_64.tar.gz"
+            directory="nvim-linux-x86_64"
+          fi
+          curl --fail --location --retry 3 \
+            "https://github.com/neovim/neovim/releases/download/${NEOVIM_VERSION}/${asset}" \
+            --output "$RUNNER_TEMP/$asset"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$directory/bin" >> "$GITHUB_PATH"
+
+      - name: Verify Neovim version
+        run: nvim --version | head -n 3
+
+      - name: Run headless regression suite
+        run: nvim --headless -u NONE -n -l tests/headless_spec.lua
+
+      - name: Parse Lua sources
+        run: >-
+          nvim --headless -u NONE -n
+          -c "lua for _, file in ipairs(vim.fn.globpath('.', '**/*.lua', false, true)) do
+          local chunk, err = loadfile(file); assert(chunk, file .. ': ' .. err) end"
+          -c 'qa!'
