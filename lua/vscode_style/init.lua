@@ -124,15 +124,18 @@ buffer_local_maparg = function(bufnr, lhs)
   if not (bufnr and vim.api.nvim_buf_is_valid(bufnr)) then
     return nil
   end
-  local ok, result = pcall(vim.api.nvim_buf_call, bufnr, function()
-    local existing = vim.fn.maparg(lhs, 'i', false, true)
-    if type(existing) == 'table' and existing.lhs ~= '' and existing.buffer == 1 then
+  -- nvim_buf_call cannot marshal function-bearing maparg tables on Neovim
+  -- 0.9. nvim_buf_get_keymap is buffer-scoped already and works across the
+  -- supported versions without changing the current buffer.
+  local ok, mappings = pcall(vim.api.nvim_buf_get_keymap, bufnr, 'i')
+  if not ok then
+    return nil
+  end
+  local wanted = canonical_lhs(lhs)
+  for _, existing in ipairs(mappings or {}) do
+    if existing.lhs ~= '' and canonical_lhs(existing.lhs) == wanted then
       return existing
     end
-    return nil
-  end)
-  if ok then
-    return result
   end
   return nil
 end
@@ -190,20 +193,30 @@ local function refresh_regular_buffer(bufnr, winid)
   if err then
     notify(vim.log.levels.WARN, 'vscode_style buffer policy failed: ' .. tostring(err))
   end
-  state.regular_buffers[bufnr] = eligible == true
+  local windows = state.regular_buffers[bufnr]
+  if type(windows) ~= 'table' then
+    windows = {}
+    state.regular_buffers[bufnr] = windows
+  end
+  windows[winid] = eligible == true
   return eligible == true
 end
 
-local function buffer_is_active(bufnr)
+local function buffer_is_active(bufnr, winid)
   if not state.enabled then
     return false
   end
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  winid = winid
+    or (bufnr == vim.api.nvim_get_current_buf() and vim.api.nvim_get_current_win())
+    or eligibility.window_for_buffer(bufnr)
   if aggressive.is_enabled() then
-    return aggressive.is_active(bufnr)
+    return aggressive.is_active(bufnr, winid)
   end
-  local active = state.regular_buffers[bufnr]
+  local windows = state.regular_buffers[bufnr]
+  local active = type(windows) == 'table' and windows[winid] or nil
   if active == nil then
-    active = refresh_regular_buffer(bufnr, eligibility.window_for_buffer(bufnr))
+    active = refresh_regular_buffer(bufnr, winid)
   end
   return active == true
 end
@@ -212,7 +225,7 @@ local function scoped_action_callback(callback, lhs)
   return function()
     -- Core mappings can be global, but simulated editing must yield in prompt,
     -- terminal, floating, read-only, and other plugin-owned buffers.
-    if not buffer_is_active(vim.api.nvim_get_current_buf()) then
+    if not buffer_is_active(vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win()) then
       local keys = vim.api.nvim_replace_termcodes(lhs, true, false, true)
       vim.api.nvim_feedkeys(keys, 'n', false)
       return
@@ -326,7 +339,7 @@ local function setup_autocommands()
     vim.api.nvim_create_autocmd('InsertCharPre', {
       group = state.autocmd_group,
       callback = function()
-        if buffer_is_active(vim.api.nvim_get_current_buf()) then
+        if buffer_is_active(vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win()) then
           actions.on_insert_pre()
         end
       end,
@@ -338,7 +351,7 @@ local function setup_autocommands()
       group = state.autocmd_group,
       callback = function(args)
         M.deactivate_selection_keymaps(args.buf)
-        if buffer_is_active(args.buf) and multi_cursor.peek_count() > 0 then
+        if buffer_is_active(args.buf, vim.api.nvim_get_current_win()) and multi_cursor.peek_count() > 0 then
           multi_cursor.clear_all_selections()
           multi_cursor.update_highlights()
         end
@@ -356,7 +369,7 @@ local function setup_autocommands()
     vim.api.nvim_create_autocmd('BufEnter', {
       group = state.autocmd_group,
       callback = function()
-        if buffer_is_active(vim.api.nvim_get_current_buf()) then
+        if buffer_is_active(vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win()) then
           multi_cursor.switch_buffer()
         end
       end,
@@ -367,10 +380,15 @@ local function setup_autocommands()
     group = state.autocmd_group,
     callback = function(args)
       state.regular_buffers[args.buf] = nil
-      if state.config.autocommands.buf_cleanup then
-        M.deactivate_selection_keymaps(args.buf)
-        multi_cursor.cleanup_buffer(args.buf)
+      -- Deferred InsertCharPre work is buffer-owned regardless of whether
+      -- optional cursor cleanup was enabled.
+      if state.pending_inserts then
+        state.pending_inserts[args.buf] = nil
       end
+      -- Wiped buffers must never remain reachable from plugin state. The
+      -- option controls normal lifecycle hooks, not destruction cleanup.
+      M.deactivate_selection_keymaps(args.buf)
+      multi_cursor.cleanup_buffer(args.buf)
     end,
   })
 
@@ -378,7 +396,7 @@ local function setup_autocommands()
     vim.api.nvim_create_autocmd('CursorMovedI', {
       group = state.autocmd_group,
       callback = function()
-        if buffer_is_active(vim.api.nvim_get_current_buf()) then
+        if buffer_is_active(vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win()) then
           actions.on_cursor_moved_i()
         end
       end,
@@ -393,6 +411,9 @@ local function setup_autocommands()
         -- edit outside the cursor operations that created them makes them
         -- unsafe to restore.
         multi_cursor.clear_snapshot(args.buf)
+        if multi_cursor.clear_selection_stacks then
+          multi_cursor.clear_selection_stacks(args.buf)
+        end
       end,
     })
   end
@@ -448,7 +469,7 @@ function M.get_cursors()
   if not state.enabled then
     return {}
   end
-  if not buffer_is_active(vim.api.nvim_get_current_buf()) then
+  if not buffer_is_active(vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win()) then
     return multi_cursor.peek_snapshot()
   end
   return multi_cursor.get_cursors()
@@ -458,7 +479,7 @@ function M.get_cursor_count()
   if not state.enabled then
     return 0
   end
-  if not buffer_is_active(vim.api.nvim_get_current_buf()) then
+  if not buffer_is_active(vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win()) then
     return multi_cursor.peek_count()
   end
   return #multi_cursor.iter()
@@ -479,7 +500,10 @@ end
 
 function M.is_buffer_active(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
-  return buffer_is_active(bufnr)
+  return buffer_is_active(
+    bufnr,
+    bufnr == vim.api.nvim_get_current_buf() and vim.api.nvim_get_current_win() or nil
+  )
 end
 
 function M.enable_aggressive_mode()
@@ -491,19 +515,35 @@ function M.enable_aggressive_mode()
 end
 
 function M.disable_aggressive_mode()
+  if not state.enabled then
+    return false
+  end
   aggressive.disable()
+  return true
 end
 
 function M.toggle_aggressive_mode()
+  if not state.enabled then
+    return false
+  end
   aggressive.toggle()
+  return true
 end
 
 function M.suspend_aggressive_mode(bufnr)
+  if not state.enabled then
+    return false
+  end
   aggressive.suspend(bufnr)
+  return true
 end
 
 function M.resume_aggressive_mode(bufnr)
+  if not state.enabled then
+    return false
+  end
   aggressive.resume(bufnr)
+  return true
 end
 
 function M.is_aggressive_mode()
@@ -552,7 +592,7 @@ function M.activate_selection_keymaps(bufnr)
   if state.config.feature_flags.backspace ~= false and not active['<BS>'] then
     set_selection_delete_keymap(bufnr, '<BS>')
   end
-  if not active['<Del>'] then
+  if state.config.feature_flags.backspace ~= false and not active['<Del>'] then
     set_selection_delete_keymap(bufnr, '<Del>')
   end
 end
