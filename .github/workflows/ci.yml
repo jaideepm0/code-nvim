@@ -50,5 +50,6 @@ jobs:
         run: >-
           nvim --headless -u NONE -n
           -c "lua for _, file in ipairs(vim.fn.globpath('.', '**/*.lua', false, true)) do
-          local chunk, err = loadfile(file); assert(chunk, file .. ': ' .. err) end"
+          local chunk, err = loadfile(file); if not chunk then
+          vim.api.nvim_err_writeln(file .. ': ' .. tostring(err)); vim.cmd('cquit 1') end end"
           -c 'qa!'

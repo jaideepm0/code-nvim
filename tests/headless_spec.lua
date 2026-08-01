@@ -384,6 +384,13 @@ test('Shift+Home and Shift+End select the complete line range', function()
     { 'é🙂b' },
     'Shift+End should include the final UTF-8 character'
   )
+  local highlight = vim.api.nvim_buf_get_extmark_by_id(
+    env.bufnr,
+    env.plugin.get_state().ns,
+    env.multi_cursor.primary().highlight_id,
+    { details = true }
+  )[3]
+  assert_eq({ highlight.end_row, highlight.end_col }, { 0, 8 }, 'highlight must reach the exclusive EOL')
 
   local home_env = setup_buffer({ 'aé🙂b' }, { cursor = { 1, 1 } })
   home_env.actions.select_to_line_boundary('home')
@@ -408,6 +415,24 @@ test('EOL selection survives the Insert-mode caret being reported on the last by
   assert_eq(cursor.col, 5, 'logical cursor should remain at the exclusive EOL endpoint')
   assert_eq(cursor.selection.active.col, 5, 'Shift+End selection should retain the full line')
   assert_eq(vim.api.nvim_buf_get_text(env.bufnr, 0, 0, 0, cursor.selection.active.col, {}), { 'hello' })
+end)
+
+test('CursorMovedI keeps Shift+End selection when Insert mode reports the EOL alias', function()
+  local env = setup_buffer({ 'hello' }, { cursor = { 1, 1 } })
+
+  env.actions.select_to_line_boundary('end')
+  local original_get_cursor = vim.api.nvim_win_get_cursor
+  vim.api.nvim_win_get_cursor = function()
+    return { 1, 5 }
+  end
+
+  local ok, err = pcall(env.actions.on_cursor_moved_i)
+  vim.api.nvim_win_get_cursor = original_get_cursor
+  assert_true(ok, err)
+
+  local selection = env.multi_cursor.primary().selection
+  assert_true(selection ~= nil, 'Insert-mode EOL alias must not collapse Shift+End')
+  assert_eq({ selection.anchor.col, selection.active.col }, { 1, 5 })
 end)
 
 test('Ctrl+D selects the current Unicode word and its next occurrence', function()

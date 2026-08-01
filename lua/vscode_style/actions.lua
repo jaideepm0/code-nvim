@@ -47,7 +47,10 @@ end
 
 local function feedkeys(keys)
   local termcodes = vim.api.nvim_replace_termcodes(keys, true, false, true)
-  vim.api.nvim_feedkeys(termcodes, 'n', true)
+  -- `termcodes` has already been translated above. Passing `true` for
+  -- `escape_ks` would ask nvim_feedkeys() to translate the result a second
+  -- time, which can make special keys depend on the terminal encoding.
+  vim.api.nvim_feedkeys(termcodes, 'n', false)
 end
 
 local function move_char(line, col, direction)
@@ -2097,14 +2100,19 @@ function M.on_cursor_moved_i()
   local cursor_col = cursor_pos[2]
 
   local active_text = get_line(primary.line)
-  local active_col = primary.col
-  if active_col >= #active_text and #active_text > 0 then
-    active_col = util.prev_codepoint(active_text, #active_text)
+  local at_logical_endpoint = cursor_col == primary.col
+  -- In Insert mode Neovim can report the caret at the exclusive end-of-line
+  -- column, while the same caret is reported at the final codepoint's start
+  -- column by Normal-mode-oriented APIs. Both positions describe the same
+  -- insertion point. Do not let CursorMovedI tear down a freshly-created
+  -- Shift+End selection just because it received the latter representation.
+  if not at_logical_endpoint and primary.col == #active_text and #active_text > 0 then
+    at_logical_endpoint = cursor_col == util.prev_codepoint(active_text, #active_text)
   end
 
   if
     cursor_line ~= primary.line
-    or cursor_col ~= active_col
+    or not at_logical_endpoint
     or cursor_line < start_pos.line
     or cursor_line > end_pos.line
     or (cursor_line == start_pos.line and cursor_col < start_pos.col)
