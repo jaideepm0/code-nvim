@@ -1,5 +1,19 @@
 local M = {}
 
+local is_linux = vim.fn.has('linux') == 1
+local is_macos = vim.fn.has('macunix') == 1
+local cursor_modifier = is_linux and 'S-M' or (is_macos and 'D-M' or 'C-M')
+local copy_modifier = is_linux and 'C-S-M' or 'S-M'
+
+local function modified_arrow(modifier, direction)
+  return string.format('<%s-%s>', modifier, direction)
+end
+
+local function cursor_arrow(direction)
+  local primary = modified_arrow(cursor_modifier, direction)
+  return cursor_modifier == 'C-M' and primary or { primary, modified_arrow('C-M', direction) }
+end
+
 local default_feature_flags = {
   selection = true,
   line_ops = true,
@@ -142,14 +156,14 @@ local keymap_definitions = {
   {
     name = 'copy_line_up',
     group = 'line_ops',
-    lhs = '<S-M-Up>',
+    lhs = modified_arrow(copy_modifier, 'Up'),
     description = 'Copy current line up',
     handler = { fn = 'copy_line', args = { 'up' } },
   },
   {
     name = 'copy_line_down',
     group = 'line_ops',
-    lhs = '<S-M-Down>',
+    lhs = modified_arrow(copy_modifier, 'Down'),
     description = 'Copy current line down',
     handler = { fn = 'copy_line', args = { 'down' } },
   },
@@ -170,14 +184,14 @@ local keymap_definitions = {
   {
     name = 'cursor_above',
     group = 'multi_cursor',
-    lhs = '<C-M-Up>',
+    lhs = cursor_arrow('Up'),
     description = 'Add cursor above',
     handler = { fn = 'add_cursor_vertical', args = { 'up' } },
   },
   {
     name = 'cursor_below',
     group = 'multi_cursor',
-    lhs = '<C-M-Down>',
+    lhs = cursor_arrow('Down'),
     description = 'Add cursor below',
     handler = { fn = 'add_cursor_vertical', args = { 'down' } },
   },

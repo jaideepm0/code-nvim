@@ -12,10 +12,10 @@
 | `Shift+Home/End` | Extend to the start or end of the line |
 | `Ctrl+Shift+Home/End` | Extend to the start or end of the file |
 | `Alt+Up/Down` | Move the selected/current lines |
-| `Shift+Alt+Up/Down` | Copy the selected/current lines |
+| Linux `Ctrl+Shift+Alt+Up/Down`; other platforms `Shift+Alt+Up/Down` | Copy the selected/current lines |
 | `Ctrl+Shift+K` | Delete the selected/current lines |
 | `Alt+Click` | Add a secondary cursor |
-| `Ctrl+Alt+Up/Down` | Add cursors above or below |
+| Linux `Shift+Alt+Up/Down`; Windows `Ctrl+Alt+Up/Down`; macOS `Option+Command+Up/Down` | Add cursors above or below (`Ctrl+Alt+Up/Down` remains an alias) |
 | `Ctrl+D` | Select the current word and add its next literal match |
 | `Ctrl+Shift+L` | Select all literal occurrences, including multiline text |
 | `Shift+Alt+Right/Left` | Expand or shrink the selection stack |

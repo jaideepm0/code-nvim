@@ -763,11 +763,15 @@ end)
 test('disable removes modifier-order-normalized default mappings', function()
   local plugin = fresh_plugin()
   plugin.setup({ mapping_strategy = 'force', notify = false })
-  assert_true(vim.fn.maparg('<M-S-Up>', 'i') ~= '', 'copy-line mapping should be installed')
+  assert_true(vim.fn.maparg('<M-S-Up>', 'i') ~= '', 'Linux cursor-above mapping should be installed')
+  assert_true(vim.fn.maparg('<M-C-Up>', 'i') ~= '', 'legacy cursor-above alias should be installed')
+  assert_true(vim.fn.maparg('<M-C-S-Up>', 'i') ~= '', 'Linux copy-line mapping should be installed')
 
   plugin.disable()
 
-  assert_eq(vim.fn.maparg('<M-S-Up>', 'i'), '', 'canonicalized Alt+Shift mapping should be removed')
+  assert_eq(vim.fn.maparg('<M-S-Up>', 'i'), '', 'canonicalized Linux cursor mapping should be removed')
+  assert_eq(vim.fn.maparg('<M-C-Up>', 'i'), '', 'canonicalized legacy cursor alias should be removed')
+  assert_eq(vim.fn.maparg('<M-C-S-Up>', 'i'), '', 'canonicalized Linux copy-line mapping should be removed')
   assert_eq(vim.fn.maparg('<CR>', 'i'), '', 'plugin newline mapping should be removed')
 end)
 
